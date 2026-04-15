@@ -3,8 +3,11 @@ use std::{path::PathBuf, process};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use rustcop::{
-    config::Config, diagnostic::Severity, files::discover_files,
-    rules::imports::ImportFormattingRule, rules::Rule,
+    config::Config,
+    diagnostic::Severity,
+    files::discover_files,
+    rules::Rule,
+    rules::imports::ImportFormattingRule,
 };
 
 #[derive(Parser)]
@@ -91,25 +94,49 @@ fn main() {
             let diagnostics = rule.check(&content, file);
             total_diagnostics += diagnostics.len();
 
-            for d in &diagnostics {
-                let sev = match d.severity {
-                    Severity::Warning => "warning".yellow(),
-                    Severity::Error => "error".red(),
-                };
-                println!(
-                    "{} {} [{}]: {}",
-                    format!("{}:{}", file.display(), d.line).bold(),
-                    sev,
-                    d.rule_id.dimmed(),
-                    d.message,
-                );
-            }
-
             if is_fix && !diagnostics.is_empty() {
                 let fixed = rule.fix(&content);
                 if fixed != content {
                     content = fixed;
                     file_changed = true;
+                    for d in &diagnostics {
+                        println!(
+                            "{} {} [{}]: {} {}",
+                            format!("{}:{}", file.display(), d.line).bold(),
+                            "fixed".green(),
+                            d.rule_id.dimmed(),
+                            d.message,
+                            "(auto-fixed)".green(),
+                        );
+                    }
+                } else {
+                    for d in &diagnostics {
+                        let sev = match d.severity {
+                            Severity::Warning => "warning".yellow(),
+                            Severity::Error => "error".red(),
+                        };
+                        println!(
+                            "{} {} [{}]: {}",
+                            format!("{}:{}", file.display(), d.line).bold(),
+                            sev,
+                            d.rule_id.dimmed(),
+                            d.message,
+                        );
+                    }
+                }
+            } else {
+                for d in &diagnostics {
+                    let sev = match d.severity {
+                        Severity::Warning => "warning".yellow(),
+                        Severity::Error => "error".red(),
+                    };
+                    println!(
+                        "{} {} [{}]: {}",
+                        format!("{}:{}", file.display(), d.line).bold(),
+                        sev,
+                        d.rule_id.dimmed(),
+                        d.message,
+                    );
                 }
             }
         }
@@ -126,6 +153,28 @@ fn main() {
     println!();
     if is_fix {
         println!("{} file(s) checked, {} fixed.", files.len(), files_fixed);
+
+        // Run a final verification pass
+        let mut remaining = 0usize;
+        for file in &files {
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for rule in &rules {
+                remaining += rule.check(&content, file).len();
+            }
+        }
+        if remaining > 0 {
+            println!(
+                "{} {} diagnostic(s) remaining after fix.",
+                "warning:".yellow(),
+                remaining
+            );
+            process::exit(1);
+        } else {
+            println!("{}", "All checks passed after fix!".green());
+        }
     } else if total_diagnostics > 0 {
         println!(
             "{} diagnostic(s) in {} file(s).",
