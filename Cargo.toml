@@ -1,6 +1,9 @@
-[package]
-name = "rustcop"
-version = "0.1.1"
+[workspace]
+resolver = "2"
+members = [ 'cargo-rustcop', 'rustcop' ]
+
+[workspace.package]
+version = "0.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Rust style linter and formatter inspired by C#'s StyleCop"
@@ -9,13 +12,16 @@ authors = ["Travis Sharp <travis@kuipersys.com>"]
 repository = "https://github.com/tsharp/rustcop"
 readme = "README.md"
 
-[[bin]]
-name = "rustcop"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 walkdir = "2"
 colored = "2"
+rustcop = { version = "0.1.2", path = "rustcop" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
