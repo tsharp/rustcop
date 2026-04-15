@@ -1,0 +1,8 @@
+# RustCop configuration
+# Rule categories can be toggled individually.
+
+[imports]
+enabled = true
+group = true      # RC1001: Group imports into std → external → crate/self/super
+sort = true       # RC1001: Sort imports alphabetically within each group
+merge = true      # RC1001: Merge imports from the same crate into one `use` block

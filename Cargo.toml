@@ -1,0 +1,16 @@
+[package]
+name = "rustcop"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust style linter and formatter inspired by C#'s StyleCop"
+
+[[bin]]
+name = "rustcop"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+walkdir = "2"
+colored = "2"
