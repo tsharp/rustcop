@@ -2,7 +2,9 @@
 name = "rustcop"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 description = "A Rust style linter and formatter inspired by C#'s StyleCop"
+keywords = ["linter", "formatter", "imports", "style", "rustfmt"]
 
 [[bin]]
 name = "rustcop"
