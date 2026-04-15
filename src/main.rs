@@ -1,14 +1,11 @@
-use std::path::PathBuf;
-use std::process;
+use std::{path::PathBuf, process};
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-
-use rustcop::config::Config;
-use rustcop::diagnostic::Severity;
-use rustcop::files::discover_files;
-use rustcop::rules::imports::ImportFormattingRule;
-use rustcop::rules::Rule;
+use rustcop::{
+    config::Config, diagnostic::Severity, files::discover_files,
+    rules::imports::ImportFormattingRule, rules::Rule,
+};
 
 #[derive(Parser)]
 #[command(
@@ -128,11 +125,7 @@ fn main() {
 
     println!();
     if is_fix {
-        println!(
-            "{} file(s) checked, {} fixed.",
-            files.len(),
-            files_fixed
-        );
+        println!("{} file(s) checked, {} fixed.", files.len(), files_fixed);
     } else if total_diagnostics > 0 {
         println!(
             "{} diagnostic(s) in {} file(s).",

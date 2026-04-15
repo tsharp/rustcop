@@ -10,10 +10,7 @@ pub fn discover_files(paths: &[PathBuf]) -> Vec<PathBuf> {
                 files.push(path.clone());
             }
         } else if path.is_dir() {
-            for entry in WalkDir::new(path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
                 let p = entry.path();
                 if p.is_file() && is_rust_file(p) {
                     files.push(p.to_path_buf());

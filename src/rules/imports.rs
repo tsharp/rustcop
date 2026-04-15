@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
-use crate::config::Config;
-use crate::diagnostic::{Diagnostic, Severity};
-use crate::rules::Rule;
+use crate::{
+    config::Config,
+    diagnostic::{Diagnostic, Severity},
+    rules::Rule,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,7 +139,9 @@ impl Rule for ImportFormattingRule {
         if fixed != *content {
             vec![Diagnostic {
                 rule_id: self.id().to_string(),
-                message: "Import statements are not properly formatted. Run `rustcop fix` to auto-fix.".to_string(),
+                message:
+                    "Import statements are not properly formatted. Run `rustcop fix` to auto-fix."
+                        .to_string(),
                 file: file.to_path_buf(),
                 line: 1,
                 severity: Severity::Warning,
@@ -480,12 +483,9 @@ fn format_single_import(imp: &ParsedUse) -> String {
     }
 
     // Multiple items – try single line first
-    let one_line = format!(
-        "{vis}use {}::{{{}}};",
-        imp.root,
-        imp.items.join(", ")
-    );
-    if one_line.len() <= 100 {
+    let has_nested_braces = imp.items.iter().any(|item| item.contains('{'));
+    let one_line = format!("{vis}use {}::{{{}}};", imp.root, imp.items.join(", "));
+    if !has_nested_braces && one_line.len() <= 100 {
         return one_line;
     }
 
@@ -553,7 +553,10 @@ use std::sync::Arc;
         let expected = "\
 use std::sync::Arc;
 
-use tokio::{task::JoinHandle, time::{Duration, Instant}};
+use tokio::{
+    task::JoinHandle,
+    time::{Duration, Instant},
+};
 ";
         assert_eq!(output, expected);
     }
