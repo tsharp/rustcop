@@ -1,11 +1,13 @@
 [package]
 name = "rustcop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Rust style linter and formatter inspired by C#'s StyleCop"
 keywords = ["linter", "formatter", "imports", "style", "rustfmt"]
 authors = ["Travis Sharp <travis@kuipersys.com>"]
+repository = "https://github.com/tsharp/rustcop"
+readme = "README.md"
 
 [[bin]]
 name = "rustcop"
