@@ -39,25 +39,18 @@ struct NormalizedUse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UseNode {
     /// `foo::bar` or `foo::{a, b}`
-    Path {
-        ident: String,
-        child: Box<UseNode>,
-    },
+    Path { ident: String, child: Box<UseNode> },
     /// A terminal name, optionally renamed: `HashMap` or `HashMap as Map`
     Name {
         ident: String,
         rename: Option<String>,
     },
     /// `self` optionally renamed
-    Slf {
-        rename: Option<String>,
-    },
+    Slf { rename: Option<String> },
     /// `*`
     Glob,
     /// `{a, b, c}` — a group of sub-trees
-    Group {
-        items: Vec<UseNode>,
-    },
+    Group { items: Vec<UseNode> },
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +362,9 @@ fn cmp_use_nodes(a: &UseNode, b: &UseNode) -> std::cmp::Ordering {
         if s.starts_with(|c: char| c.is_lowercase()) {
             0 // snake_case
         } else if s.starts_with(|c: char| c.is_uppercase()) {
-            if s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+            if s.chars()
+                .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+            {
                 2 // UPPER_SNAKE_CASE
             } else {
                 1 // CamelCase
@@ -382,15 +377,9 @@ fn cmp_use_nodes(a: &UseNode, b: &UseNode) -> std::cmp::Ordering {
     fn sort_key(node: &UseNode) -> (u8, u8, String) {
         match node {
             UseNode::Slf { .. } => (0, 0, String::new()),
-            UseNode::Path { ident, child } if ident == "self" => {
-                (0, 0, node_sort_suffix(child))
-            }
-            UseNode::Path { ident, child } if ident == "super" => {
-                (1, 0, node_sort_suffix(child))
-            }
-            UseNode::Path { ident, child } if ident == "crate" => {
-                (2, 0, node_sort_suffix(child))
-            }
+            UseNode::Path { ident, child } if ident == "self" => (0, 0, node_sort_suffix(child)),
+            UseNode::Path { ident, child } if ident == "super" => (1, 0, node_sort_suffix(child)),
+            UseNode::Path { ident, child } if ident == "crate" => (2, 0, node_sort_suffix(child)),
             UseNode::Path { ident, child } => {
                 let cat = ident_case_category(ident);
                 (3, cat, format!("{ident}::{}", node_sort_suffix(child)))
@@ -566,9 +555,7 @@ fn format_use_stmt(node: &UseNode, vis_prefix: &str) -> String {
 /// Get the maximum brace nesting depth in a UseNode tree.
 fn max_brace_depth(node: &UseNode) -> usize {
     match node {
-        UseNode::Group { items } => {
-            1 + items.iter().map(max_brace_depth).max().unwrap_or(0)
-        }
+        UseNode::Group { items } => 1 + items.iter().map(max_brace_depth).max().unwrap_or(0),
         UseNode::Path { child, .. } => max_brace_depth(child),
         _ => 0,
     }
@@ -577,7 +564,10 @@ fn max_brace_depth(node: &UseNode) -> usize {
 /// Format a node as a simple path string (single line, no `use` keyword).
 fn format_node_to_path(node: &UseNode) -> String {
     match node {
-        UseNode::Name { ident, rename: None } => ident.clone(),
+        UseNode::Name {
+            ident,
+            rename: None,
+        } => ident.clone(),
         UseNode::Name {
             ident,
             rename: Some(alias),

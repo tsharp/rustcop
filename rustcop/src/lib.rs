@@ -11,8 +11,8 @@ pub mod rules;
 use config::Config;
 use diagnostic::Severity;
 use files::discover_files;
-use rules::Rule;
 use rules::imports::ImportFormattingRule;
+use rules::Rule;
 
 #[derive(Parser)]
 #[command(
