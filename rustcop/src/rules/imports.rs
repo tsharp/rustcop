@@ -1,10 +1,19 @@
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
+
+use syn::{Item, UseTree};
 
 use crate::{
     config::Config,
     diagnostic::{Diagnostic, Severity},
     rules::Rule,
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MAX_LINE_WIDTH: usize = 100;
+const INDENT: &str = "    ";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,12 +26,38 @@ enum ImportGroup {
     Internal, // crate, self, super
 }
 
+/// A normalized, sortable representation of a single `use` statement.
 #[derive(Debug, Clone)]
-struct ParsedUse {
+struct NormalizedUse {
     visibility: String,
-    root: String,
-    items: Vec<String>,
+    tree: UseNode,
     group: ImportGroup,
+}
+
+/// Recursive tree representation of a use path, mirroring syn::UseTree
+/// but with sorting/formatting capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UseNode {
+    /// `foo::bar` or `foo::{a, b}`
+    Path {
+        ident: String,
+        child: Box<UseNode>,
+    },
+    /// A terminal name, optionally renamed: `HashMap` or `HashMap as Map`
+    Name {
+        ident: String,
+        rename: Option<String>,
+    },
+    /// `self` optionally renamed
+    Slf {
+        rename: Option<String>,
+    },
+    /// `*`
+    Glob,
+    /// `{a, b, c}` — a group of sub-trees
+    Group {
+        items: Vec<UseNode>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -52,41 +87,45 @@ impl ImportFormattingRule {
         let lines: Vec<&str> = content.lines().collect();
         let has_trailing_newline = content.ends_with('\n');
 
+        // Find the use-statement region
         let Some((region_start, region_end)) = find_use_region(&lines) else {
             return content.to_string();
         };
 
-        let region_lines = &lines[region_start..=region_end];
-        let raw_statements = extract_use_statements(region_lines);
-
-        if raw_statements.is_empty() {
-            return content.to_string();
-        }
-
-        // Parse
-        let mut parsed: Vec<ParsedUse> = raw_statements
+        // Extract the raw text of the use region and parse it with syn
+        let region_text: String = lines[region_start..=region_end]
             .iter()
-            .map(|s| parse_use_statement(s))
+            .map(|l| format!("{l}\n"))
             .collect();
 
-        // Merge
+        let mut imports = match parse_use_items(&region_text) {
+            Some(imports) if !imports.is_empty() => imports,
+            _ => return content.to_string(),
+        };
+
+        // Merge imports sharing the same root
         if self.merge {
-            parsed = merge_imports(parsed);
+            imports = merge_imports(imports);
         }
 
         // Sort
         if self.sort {
-            parsed.sort_by(|a, b| {
+            for imp in &mut imports {
+                sort_use_node(&mut imp.tree);
+            }
+            imports.sort_by(|a, b| {
                 if self.group {
-                    a.group.cmp(&b.group).then_with(|| cmp_imports(a, b))
+                    a.group
+                        .cmp(&b.group)
+                        .then_with(|| cmp_use_nodes(&a.tree, &b.tree))
                 } else {
-                    cmp_imports(a, b)
+                    cmp_use_nodes(&a.tree, &b.tree)
                 }
             });
         }
 
-        // Format the sorted/merged imports
-        let formatted = format_parsed_imports(&parsed, self.group);
+        // Format
+        let formatted = format_all_imports(&imports, self.group);
 
         // Reconstruct the file
         let mut result = String::new();
@@ -97,7 +136,7 @@ impl ImportFormattingRule {
             result.push('\n');
         }
 
-        // Formatted imports (already has trailing newline)
+        // Formatted imports
         result.push_str(&formatted);
 
         // Lines after the use region – skip leading blank lines to avoid doubles
@@ -157,16 +196,99 @@ impl Rule for ImportFormattingRule {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers – classification
+// Parsing – syn-based
 // ---------------------------------------------------------------------------
 
-fn classify_import(root: &str) -> ImportGroup {
-    match root {
+/// Parse the use-region text with syn and convert to our internal representation.
+fn parse_use_items(region_text: &str) -> Option<Vec<NormalizedUse>> {
+    let file: syn::File = syn::parse_str(region_text).ok()?;
+    let mut result = Vec::new();
+
+    for item in &file.items {
+        if let Item::Use(item_use) = item {
+            let vis = format_visibility(&item_use.vis);
+            let tree = use_tree_to_node(&item_use.tree);
+            let group = classify_node(&tree);
+            result.push(NormalizedUse {
+                visibility: vis,
+                tree,
+                group,
+            });
+        }
+    }
+
+    Some(result)
+}
+
+/// Convert syn::UseTree to our UseNode.
+fn use_tree_to_node(tree: &UseTree) -> UseNode {
+    match tree {
+        UseTree::Path(p) => UseNode::Path {
+            ident: p.ident.to_string(),
+            child: Box::new(use_tree_to_node(&p.tree)),
+        },
+        UseTree::Name(n) => UseNode::Name {
+            ident: n.ident.to_string(),
+            rename: None,
+        },
+        UseTree::Rename(r) => UseNode::Name {
+            ident: r.ident.to_string(),
+            rename: Some(r.rename.to_string()),
+        },
+        UseTree::Glob(_) => UseNode::Glob,
+        UseTree::Group(g) => UseNode::Group {
+            items: g.items.iter().map(use_tree_to_node).collect(),
+        },
+    }
+}
+
+fn format_visibility(vis: &syn::Visibility) -> String {
+    match vis {
+        syn::Visibility::Public(_) => "pub".to_string(),
+        syn::Visibility::Restricted(r) => {
+            let path = r
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            if r.in_token.is_some() {
+                format!("pub(in {path})")
+            } else {
+                format!("pub({path})")
+            }
+        }
+        syn::Visibility::Inherited => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------
+
+fn classify_node(node: &UseNode) -> ImportGroup {
+    let root = root_ident(node);
+    match root.as_str() {
         "std" | "core" | "alloc" => ImportGroup::Std,
         "crate" | "self" | "super" => ImportGroup::Internal,
         _ => ImportGroup::External,
     }
 }
+
+fn root_ident(node: &UseNode) -> String {
+    match node {
+        UseNode::Path { ident, .. } => ident.clone(),
+        UseNode::Name { ident, .. } => ident.clone(),
+        UseNode::Slf { .. } => "self".to_string(),
+        UseNode::Glob => "*".to_string(),
+        UseNode::Group { items } => items.first().map(root_ident).unwrap_or_default(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Region detection (text-based, kept from original)
+// ---------------------------------------------------------------------------
 
 fn is_use_line(trimmed: &str) -> bool {
     trimmed.starts_with("use ")
@@ -174,12 +296,6 @@ fn is_use_line(trimmed: &str) -> bool {
         || (trimmed.starts_with("pub(") && trimmed.contains(") use "))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers – region detection
-// ---------------------------------------------------------------------------
-
-/// Find the contiguous block of `use` statements (may include interleaved
-/// blank lines and comments). Returns `(first_line, last_line)` inclusive.
 fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
     let mut first_use: Option<usize> = None;
     let mut last_use_end: usize = 0;
@@ -190,7 +306,6 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
     while i < lines.len() {
         let trimmed = lines[i].trim();
 
-        // Inside a multi-line use statement
         if brace_depth > 0 {
             for ch in trimmed.chars() {
                 match ch {
@@ -220,7 +335,7 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
         } else if found_any_use && (trimmed.is_empty() || trimmed.starts_with("//")) {
             // blank line or comment between uses – keep scanning
         } else if found_any_use {
-            break; // end of use region
+            break;
         }
 
         i += 1;
@@ -230,222 +345,177 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers – extraction
+// Sorting
 // ---------------------------------------------------------------------------
 
-/// Pull individual (possibly multi-line) `use` statements out of the region
-/// lines, ignoring blank lines and comments.
-fn extract_use_statements(lines: &[&str]) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut brace_depth: i32 = 0;
-    let mut in_use = false;
+/// Recursively sort all Group nodes in the tree.
+fn sort_use_node(node: &mut UseNode) {
+    if let UseNode::Path { child, .. } = node {
+        sort_use_node(child);
+    }
+    if let UseNode::Group { items } = node {
+        for item in items.iter_mut() {
+            sort_use_node(item);
+        }
+        items.sort_by(cmp_use_nodes);
+    }
+}
 
-    for line in lines {
-        let trimmed = line.trim();
-
-        if !in_use {
-            if is_use_line(trimmed) {
-                in_use = true;
-                current = trimmed.to_string();
-                for ch in trimmed.chars() {
-                    match ch {
-                        '{' => brace_depth += 1,
-                        '}' => brace_depth -= 1,
-                        _ => {}
-                    }
-                }
-                if brace_depth == 0 && trimmed.ends_with(';') {
-                    statements.push(current.clone());
-                    current.clear();
-                    in_use = false;
-                }
+/// Compare two UseNodes for sorting. Matches rustfmt's ordering:
+/// self < super < crate < identifiers < glob < groups
+/// Within identifiers: snake_case < CamelCase < UPPER_SNAKE_CASE, then lexicographic.
+fn cmp_use_nodes(a: &UseNode, b: &UseNode) -> std::cmp::Ordering {
+    fn ident_case_category(s: &str) -> u8 {
+        if s.starts_with(|c: char| c.is_lowercase()) {
+            0 // snake_case
+        } else if s.starts_with(|c: char| c.is_uppercase()) {
+            if s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                2 // UPPER_SNAKE_CASE
+            } else {
+                1 // CamelCase
             }
-            // skip comments / blank lines
         } else {
-            // continuation of a multi-line use
-            current.push(' ');
-            current.push_str(trimmed);
-            for ch in trimmed.chars() {
-                match ch {
-                    '{' => brace_depth += 1,
-                    '}' => brace_depth -= 1,
-                    _ => {}
-                }
-            }
-            if brace_depth == 0 {
-                statements.push(current.clone());
-                current.clear();
-                in_use = false;
-                brace_depth = 0;
-            }
+            1 // default
         }
     }
 
-    statements
-}
-
-// ---------------------------------------------------------------------------
-// Helpers – parsing
-// ---------------------------------------------------------------------------
-
-fn parse_use_statement(stmt: &str) -> ParsedUse {
-    let trimmed = stmt.trim().trim_end_matches(';').trim();
-
-    // Extract visibility
-    let (vis, rest) = extract_visibility(trimmed);
-
-    // Strip `use` keyword
-    let path = rest.trim().strip_prefix("use").unwrap_or(rest).trim();
-
-    // Handle absolute paths (`::std::...`)
-    let path = path.strip_prefix("::").unwrap_or(path);
-
-    let (root, items) = extract_root_and_items(path);
-    let group = classify_import(&root);
-
-    ParsedUse {
-        visibility: vis,
-        root,
-        items,
-        group,
-    }
-}
-
-fn extract_visibility(s: &str) -> (String, &str) {
-    if s.starts_with("pub(") {
-        let mut depth = 0;
-        for (i, ch) in s.char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return (s[..i + 1].to_string(), s[i + 1..].trim());
-                    }
-                }
-                _ => {}
+    fn sort_key(node: &UseNode) -> (u8, u8, String) {
+        match node {
+            UseNode::Slf { .. } => (0, 0, String::new()),
+            UseNode::Path { ident, child } if ident == "self" => {
+                (0, 0, node_sort_suffix(child))
             }
-        }
-        (String::new(), s) // malformed, treat as no visibility
-    } else if s.starts_with("pub ") {
-        ("pub".to_string(), &s[4..])
-    } else {
-        (String::new(), s)
-    }
-}
-
-fn extract_root_and_items(path: &str) -> (String, Vec<String>) {
-    if let Some(pos) = path.find("::") {
-        let root = path[..pos].to_string();
-        let rest = path[pos + 2..].trim();
-
-        if rest.starts_with('{') && rest.ends_with('}') {
-            let inner = &rest[1..rest.len() - 1];
-            let items = split_top_level(inner.trim());
-            (root, items)
-        } else {
-            (root, vec![rest.to_string()])
-        }
-    } else {
-        // bare import: `use serde;`
-        (path.to_string(), vec![])
-    }
-}
-
-/// Split a comma-separated list while respecting nested `{ }`.
-fn split_top_level(s: &str) -> Vec<String> {
-    let mut items = Vec::new();
-    let mut depth = 0;
-    let mut current = String::new();
-
-    for ch in s.chars() {
-        match ch {
-            '{' => {
-                depth += 1;
-                current.push(ch);
+            UseNode::Path { ident, child } if ident == "super" => {
+                (1, 0, node_sort_suffix(child))
             }
-            '}' => {
-                depth -= 1;
-                current.push(ch);
+            UseNode::Path { ident, child } if ident == "crate" => {
+                (2, 0, node_sort_suffix(child))
             }
-            ',' if depth == 0 => {
-                let item = current.trim().to_string();
-                if !item.is_empty() {
-                    items.push(item);
-                }
-                current.clear();
+            UseNode::Path { ident, child } => {
+                let cat = ident_case_category(ident);
+                (3, cat, format!("{ident}::{}", node_sort_suffix(child)))
             }
-            _ => current.push(ch),
+            UseNode::Name { ident, .. } => {
+                let cat = ident_case_category(ident);
+                (3, cat, ident.clone())
+            }
+            UseNode::Glob => (4, 0, String::new()),
+            UseNode::Group { .. } => (5, 0, String::new()),
         }
     }
-    let item = current.trim().to_string();
-    if !item.is_empty() {
-        items.push(item);
+
+    let (ka, ca, fa) = sort_key(a);
+    let (kb, cb, fb) = sort_key(b);
+    ka.cmp(&kb)
+        .then_with(|| ca.cmp(&cb))
+        .then_with(|| fa.cmp(&fb))
+}
+
+fn node_sort_suffix(node: &UseNode) -> String {
+    match node {
+        UseNode::Path { ident, child } => format!("{ident}::{}", node_sort_suffix(child)),
+        UseNode::Name { ident, .. } => ident.clone(),
+        UseNode::Slf { .. } => "self".to_string(),
+        UseNode::Glob => "*".to_string(),
+        UseNode::Group { items } => {
+            let inner: Vec<String> = items.iter().map(|i| node_sort_suffix(i)).collect();
+            format!("{{{}}}", inner.join(", "))
+        }
     }
-    items
 }
 
 // ---------------------------------------------------------------------------
-// Helpers – merging
+// Merging
 // ---------------------------------------------------------------------------
 
-fn merge_imports(imports: Vec<ParsedUse>) -> Vec<ParsedUse> {
-    // Key: (visibility, root)
-    let mut by_key: BTreeMap<(String, String), (ImportGroup, Vec<String>, bool)> = BTreeMap::new();
+/// Merge imports that share the same visibility and root path segment.
+fn merge_imports(imports: Vec<NormalizedUse>) -> Vec<NormalizedUse> {
+    use std::collections::BTreeMap;
+
+    // Group by (visibility, root_ident)
+    let mut by_key: BTreeMap<(String, String), Vec<NormalizedUse>> = BTreeMap::new();
 
     for imp in imports {
-        let key = (imp.visibility.clone(), imp.root.clone());
-        let entry = by_key
-            .entry(key)
-            .or_insert_with(|| (imp.group, Vec::new(), false));
-        if imp.items.is_empty() {
-            entry.2 = true; // bare import (`use serde;`)
-        } else {
-            entry.1.extend(imp.items);
-        }
+        let root = root_ident(&imp.tree);
+        let key = (imp.visibility.clone(), root);
+        by_key.entry(key).or_default().push(imp);
     }
 
     by_key
-        .into_iter()
-        .map(|((visibility, root), (group, mut items, has_bare))| {
-            if has_bare && !items.is_empty() {
-                // The bare import becomes `self` inside the braced list
-                items.push("self".to_string());
+        .into_values()
+        .map(|group| {
+            if group.len() == 1 {
+                return group.into_iter().next().unwrap();
             }
-            // Sort with `self` always first
-            items.sort_by(|a, b| match (a.as_str(), b.as_str()) {
-                ("self", "self") => std::cmp::Ordering::Equal,
-                ("self", _) => std::cmp::Ordering::Less,
-                (_, "self") => std::cmp::Ordering::Greater,
-                _ => a.cmp(b),
-            });
-            items.dedup();
-            ParsedUse {
-                visibility,
-                root,
-                items: if has_bare && items.is_empty() {
-                    vec![]
-                } else {
-                    items
-                },
-                group,
+
+            let vis = group[0].visibility.clone();
+            let grp = group[0].group;
+
+            // Collect all leaf paths from all trees in this group
+            let mut all_children: Vec<UseNode> = Vec::new();
+            for imp in &group {
+                collect_children_for_merge(&imp.tree, &mut all_children);
+            }
+
+            // Deduplicate
+            all_children.dedup();
+
+            let root = root_ident(&group[0].tree);
+
+            let tree = if all_children.is_empty() {
+                UseNode::Name {
+                    ident: root,
+                    rename: None,
+                }
+            } else if all_children.len() == 1 {
+                UseNode::Path {
+                    ident: root,
+                    child: Box::new(all_children.into_iter().next().unwrap()),
+                }
+            } else {
+                UseNode::Path {
+                    ident: root,
+                    child: Box::new(UseNode::Group {
+                        items: all_children,
+                    }),
+                }
+            };
+
+            NormalizedUse {
+                visibility: vis,
+                tree,
+                group: grp,
             }
         })
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Helpers – formatting
-// ---------------------------------------------------------------------------
-
-fn cmp_imports(a: &ParsedUse, b: &ParsedUse) -> std::cmp::Ordering {
-    a.root
-        .cmp(&b.root)
-        .then_with(|| a.items.join(", ").cmp(&b.items.join(", ")))
+/// Extract the children (everything after the root segment) for merging.
+fn collect_children_for_merge(node: &UseNode, out: &mut Vec<UseNode>) {
+    match node {
+        UseNode::Path { child, .. } => match child.as_ref() {
+            UseNode::Group { items } => {
+                out.extend(items.iter().cloned());
+            }
+            other => {
+                out.push(other.clone());
+            }
+        },
+        UseNode::Name { rename, .. } => {
+            // Bare import like `use serde;` becomes `self`
+            out.push(UseNode::Slf {
+                rename: rename.clone(),
+            });
+        }
+        _ => {}
+    }
 }
 
-fn format_parsed_imports(imports: &[ParsedUse], group: bool) -> String {
+// ---------------------------------------------------------------------------
+// Formatting – rustfmt-compatible output
+// ---------------------------------------------------------------------------
+
+fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
     let mut result = String::new();
     let mut prev_group: Option<ImportGroup> = None;
 
@@ -458,44 +528,195 @@ fn format_parsed_imports(imports: &[ParsedUse], group: bool) -> String {
             }
         }
         prev_group = Some(imp.group);
-        result.push_str(&format_single_import(imp));
+
+        let vis_prefix = if imp.visibility.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", imp.visibility)
+        };
+
+        let formatted = format_use_stmt(&imp.tree, &vis_prefix);
+        result.push_str(&formatted);
         result.push('\n');
     }
 
     result
 }
 
-fn format_single_import(imp: &ParsedUse) -> String {
-    let vis = if imp.visibility.is_empty() {
-        String::new()
-    } else {
-        format!("{} ", imp.visibility)
+/// Format a complete `use` statement from a tree.
+fn format_use_stmt(node: &UseNode, vis_prefix: &str) -> String {
+    let path_str = format_node_to_path(node);
+    let stmt = format!("{vis_prefix}use {path_str};");
+
+    // If it's a simple statement (no braces), just return it
+    if !stmt.contains('{') {
+        return stmt;
+    }
+
+    // If it fits on one line and has no nested braces-within-braces, return it
+    let brace_depth = max_brace_depth(node);
+    if brace_depth <= 1 && stmt.len() <= MAX_LINE_WIDTH {
+        return stmt;
+    }
+
+    // Need multi-line formatting
+    format_use_stmt_multiline(node, vis_prefix)
+}
+
+/// Get the maximum brace nesting depth in a UseNode tree.
+fn max_brace_depth(node: &UseNode) -> usize {
+    match node {
+        UseNode::Group { items } => {
+            1 + items.iter().map(max_brace_depth).max().unwrap_or(0)
+        }
+        UseNode::Path { child, .. } => max_brace_depth(child),
+        _ => 0,
+    }
+}
+
+/// Format a node as a simple path string (single line, no `use` keyword).
+fn format_node_to_path(node: &UseNode) -> String {
+    match node {
+        UseNode::Name { ident, rename: None } => ident.clone(),
+        UseNode::Name {
+            ident,
+            rename: Some(alias),
+        } => format!("{ident} as {alias}"),
+        UseNode::Slf { rename: None } => "self".to_string(),
+        UseNode::Slf {
+            rename: Some(alias),
+        } => format!("self as {alias}"),
+        UseNode::Glob => "*".to_string(),
+        UseNode::Path { ident, child } => {
+            format!("{ident}::{}", format_node_to_path(child))
+        }
+        UseNode::Group { items } => {
+            let inner: Vec<String> = items.iter().map(format_node_to_path).collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+    }
+}
+
+/// Format a use statement with multi-line braces, matching rustfmt behavior.
+fn format_use_stmt_multiline(node: &UseNode, vis_prefix: &str) -> String {
+    // Collect the path segments leading to the first group
+    let mut result = format!("{vis_prefix}use ");
+    format_node_multiline(node, &mut result, 0);
+    result.push(';');
+    result
+}
+
+/// Recursively format a node, expanding groups to multiple lines when needed.
+fn format_node_multiline(node: &UseNode, out: &mut String, indent_level: usize) {
+    match node {
+        UseNode::Path { ident, child } => {
+            out.push_str(ident);
+            out.push_str("::");
+            match child.as_ref() {
+                UseNode::Group { items } => {
+                    format_group_multiline(items, out, indent_level);
+                }
+                _ => {
+                    format_node_multiline(child, out, indent_level);
+                }
+            }
+        }
+        UseNode::Group { items } => {
+            format_group_multiline(items, out, indent_level);
+        }
+        // Terminal nodes
+        _ => {
+            out.push_str(&format_node_to_path(node));
+        }
+    }
+}
+
+/// Format a `{items...}` group, deciding between single-line and multi-line.
+/// When multi-line, packs simple items onto lines up to MAX_LINE_WIDTH (like rustfmt).
+fn format_group_multiline(items: &[UseNode], out: &mut String, indent_level: usize) {
+    let child_indent = INDENT.repeat(indent_level + 1);
+    let close_indent = INDENT.repeat(indent_level);
+
+    // Check if any child needs multi-line (has nested groups or would be too long)
+    let needs_multiline = items.iter().any(|item| {
+        contains_group(item) || {
+            let s = format_node_to_path(item);
+            child_indent.len() + s.len() + 1 > MAX_LINE_WIDTH
+        }
+    }) || {
+        // Also check if the whole group on one line would be too long
+        let inner: Vec<String> = items.iter().map(format_node_to_path).collect();
+        let one_line_len = inner.join(", ").len() + 2;
+        indent_level * 4 + one_line_len + 10 > MAX_LINE_WIDTH
     };
 
-    // Bare import or sole `self` import → `use root;`
-    if imp.items.is_empty() || (imp.items.len() == 1 && imp.items[0] == "self") {
-        return format!("{vis}use {};", imp.root);
+    if !needs_multiline {
+        // Single-line group
+        let inner: Vec<String> = items.iter().map(format_node_to_path).collect();
+        out.push('{');
+        out.push_str(&inner.join(", "));
+        out.push('}');
+        return;
     }
 
-    // Single simple item → `use root::item;`
-    if imp.items.len() == 1 {
-        return format!("{vis}use {}::{};", imp.root, imp.items[0]);
+    // Multi-line group — pack simple items onto lines like rustfmt
+    out.push_str("{\n");
+
+    // Separate items into "simple" (no nested groups) and "complex" (has nested groups)
+    // but maintain original order. We'll pack simple items on lines.
+    let mut i = 0;
+    while i < items.len() {
+        if contains_group(&items[i]) {
+            // Complex item: gets its own indented block
+            out.push_str(&child_indent);
+            format_node_multiline(&items[i], out, indent_level + 1);
+            out.push_str(",\n");
+            i += 1;
+        } else {
+            // Pack consecutive simple items onto lines
+            let mut line = child_indent.clone();
+            while i < items.len() && !contains_group(&items[i]) {
+                let s = format_node_to_path(&items[i]);
+                let addition = if line.len() == child_indent.len() {
+                    // First item on this line
+                    s.clone()
+                } else {
+                    format!(", {s}")
+                };
+
+                // Check if adding this item would exceed line width
+                // +1 for the trailing comma
+                if line.len() + addition.len() + 1 > MAX_LINE_WIDTH
+                    && line.len() > child_indent.len()
+                {
+                    // This item doesn't fit — flush current line and start new one
+                    out.push_str(&line);
+                    out.push_str(",\n");
+                    line = format!("{child_indent}{s}");
+                } else {
+                    line.push_str(&addition);
+                }
+                i += 1;
+            }
+            // Flush remaining line
+            if line.len() > child_indent.len() {
+                out.push_str(&line);
+                out.push_str(",\n");
+            }
+        }
     }
 
-    // Multiple items – try single line first
-    let has_nested_braces = imp.items.iter().any(|item| item.contains('{'));
-    let one_line = format!("{vis}use {}::{{{}}};", imp.root, imp.items.join(", "));
-    if !has_nested_braces && one_line.len() <= 100 {
-        return one_line;
-    }
+    out.push_str(&close_indent);
+    out.push('}');
+}
 
-    // Multi-line
-    let mut s = format!("{vis}use {}::{{\n", imp.root);
-    for item in &imp.items {
-        s.push_str(&format!("    {item},\n"));
+/// Check if a UseNode contains any Group (nested braces).
+fn contains_group(node: &UseNode) -> bool {
+    match node {
+        UseNode::Group { .. } => true,
+        UseNode::Path { child, .. } => contains_group(child),
+        _ => false,
     }
-    s.push_str("};");
-    s
 }
 
 // ---------------------------------------------------------------------------
@@ -507,124 +728,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_grouping_and_sorting() {
-        let input = "\
-use dashmap::DashMap;
-use std::sync::Arc;
-use crate::foo;
-";
+    fn test_bad_format_to_good_format() {
+        let input = r#"use criterion::{Criterion, criterion_group, criterion_main};
+use documentdb_gateway_core::{
+    configuration::{CertInputType, CertificateOptions, DocumentDBSetupConfiguration},
+    postgres::{ conn_mgmt::{ run_request_with_retries, Connection, ConnectionPool, ConnectionSource, PgPoolSettings, QueryOptions, RequestOptions, }, ScopedTransaction, },
+    requests::request_tracker::RequestTracker,
+};"#;
+
+        let expected = r#"use criterion::{criterion_group, criterion_main, Criterion};
+use documentdb_gateway_core::{
+    configuration::{CertInputType, CertificateOptions, DocumentDBSetupConfiguration},
+    postgres::{
+        conn_mgmt::{
+            run_request_with_retries, Connection, ConnectionPool, ConnectionSource, PgPoolSettings,
+            QueryOptions, RequestOptions,
+        },
+        ScopedTransaction,
+    },
+    requests::request_tracker::RequestTracker,
+};"#;
+
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        let expected = "\
-use std::sync::Arc;
-
-use dashmap::DashMap;
-
-use crate::foo;
-";
-        assert_eq!(output, expected);
+        let result = rule.format_imports(input);
+        assert_eq!(result.trim(), expected.trim(), "\n\nGot:\n{result}");
     }
 
     #[test]
-    fn test_merging_same_crate() {
-        let input = "\
-use std::sync::Arc;
-use std::collections::HashMap;
-";
+    fn test_simple_single_line() {
+        let input = "use std::collections::HashMap;\n";
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        let expected = "\
-use std::{collections::HashMap, sync::Arc};
-";
-        assert_eq!(output, expected);
+        let result = rule.format_imports(input);
+        assert_eq!(result, input);
     }
 
     #[test]
-    fn test_multiline_use() {
-        let input = "\
-use tokio::{
-    task::JoinHandle,
-    time::{Duration, Instant},
-};
-use std::sync::Arc;
-";
+    fn test_sorting_within_braces() {
+        let input = "use std::{fmt, collections::HashMap, io};\n";
+        let expected = "use std::{collections::HashMap, fmt, io};\n";
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        let expected = "\
-use std::sync::Arc;
-
-use tokio::{
-    task::JoinHandle,
-    time::{Duration, Instant},
-};
-";
-        assert_eq!(output, expected);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_full_example() {
-        let input = "\
-use dashmap::DashMap;
-use std::sync::Arc;
-use tokio::{
-    task::JoinHandle,
-    time::{Duration, Instant},
-};
-use tokio_postgres::IsolationLevel;
-
-use crate::context::transaction::{GatewayTransaction, RequestTransactionInfo, TransactionNumber};
-use crate::{
-    context::{ConnectionContext, SessionId},
-    error::{DocumentDBError, ErrorCode, Result},
-    postgres::{conn_mgmt::Connection, PgDataClient},
-};
-";
+    fn test_grouping() {
+        let input = "use crate::foo;\nuse std::io;\nuse serde::Serialize;\n";
+        let expected = "use std::io;\n\nuse serde::Serialize;\n\nuse crate::foo;\n";
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-
-        // std first, then external, then internal
-        assert!(output.starts_with("use std::sync::Arc;\n"));
-        assert!(output.contains("\nuse dashmap::DashMap;\n"));
-        assert!(output.contains("\nuse crate::"));
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_no_change_when_already_formatted() {
-        let input = "\
-use std::sync::Arc;
-
-use dashmap::DashMap;
-
-use crate::foo;
-";
+    fn test_merge_same_root() {
+        let input = "use std::io;\nuse std::fmt;\n";
+        let expected = "use std::{fmt, io};\n";
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        assert_eq!(output, input);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_preserves_code_after_imports() {
-        let input = "\
-use std::sync::Arc;
-use dashmap::DashMap;
-
-pub struct Foo;
-";
+    fn test_pub_visibility() {
+        let input = "pub use serde::{Deserialize, Serialize};\n";
         let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        assert!(output.contains("pub struct Foo;"));
-    }
-
-    #[test]
-    fn test_pub_use() {
-        let input = "\
-pub use crate::bar;
-use std::sync::Arc;
-";
-        let rule = ImportFormattingRule::new(true, true, true);
-        let output = rule.format_imports(input);
-        // pub use and non-pub use should not be merged
-        assert!(output.contains("pub use crate::bar;"));
-        assert!(output.contains("use std::sync::Arc;"));
+        let result = rule.format_imports(input);
+        assert_eq!(result, input);
     }
 }

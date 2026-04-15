@@ -53,13 +53,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-rustcop"
-version = "0.1.2"
-dependencies = [
- "rustcop",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -187,11 +180,14 @@ dependencies = [
 
 [[package]]
 name = "rustcop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "colored",
+ "proc-macro2",
+ "quote",
  "serde",
+ "syn",
  "toml",
  "walkdir",
 ]

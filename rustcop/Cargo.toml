@@ -8,6 +8,11 @@ keywords.workspace = true
 authors.workspace = true
 repository.workspace = true
 readme.workspace = true
+default-run = "rustcop"
+
+[[bin]]
+name = "cargo-rustcop"
+path = "src/bin/cargo-rustcop.rs"
 
 [[bin]]
 name = "rustcop"
@@ -19,3 +24,6 @@ serde.workspace = true
 toml.workspace = true
 walkdir.workspace = true
 colored.workspace = true
+syn = { version = "2.0.117", features = ["full", "parsing", "printing"] }
+quote = "1.0.45"
+proc-macro2 = "1.0.106"
