@@ -3,7 +3,7 @@ resolver = "2"
 members = [ 'rustcop', 'rustcop-macros' ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.1.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Rust style linter and formatter inspired by C#'s StyleCop"
