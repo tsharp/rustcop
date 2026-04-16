@@ -31,7 +31,9 @@ enum ImportGroup {
 struct NormalizedUse {
     visibility: String,
     tree: UseNode,
+    original_tree: Option<UseNode>,
     group: ImportGroup,
+    prefer_multiline: bool,
     leading_lines: Vec<String>,
     original_block: String,
     mergeable: bool,
@@ -223,8 +225,10 @@ fn parse_use_items(
 
         result.push(NormalizedUse {
             visibility: vis,
+            original_tree: Some(tree.clone()),
             tree,
             group,
+            prefer_multiline: should_preserve_multiline(&block.use_text),
             leading_lines: block.leading_lines,
             original_block: block.original_block,
             mergeable: !has_tag && !is_super,
@@ -315,6 +319,31 @@ fn consume_use_stmt_end(lines: &[&str], start: usize) -> usize {
     }
 
     lines.len().saturating_sub(1)
+}
+
+fn should_preserve_multiline(use_text: &str) -> bool {
+    if !use_text.contains('\n') {
+        return false;
+    }
+
+    let lines: Vec<&str> = use_text.lines().collect();
+    if lines.len() < 3 {
+        return false;
+    }
+
+    // Preserve only when multiline style is already clean.
+    // If we see "{ " or " }" patterns, it's likely a compacted style we should normalize.
+    for line in lines.iter().skip(1).take(lines.len().saturating_sub(2)) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains("{ ") || trimmed.contains(" }") {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Convert syn::UseTree to our UseNode.
@@ -641,7 +670,9 @@ fn merge_imports(imports: Vec<NormalizedUse>) -> Vec<NormalizedUse> {
             NormalizedUse {
                 visibility: vis,
                 tree,
+                original_tree: None,
                 group: grp,
+                prefer_multiline: false,
                 leading_lines: Vec::new(),
                 original_block: String::new(),
                 mergeable: true,
@@ -699,6 +730,17 @@ fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
             continue;
         }
 
+        if imp.prefer_multiline
+            && imp
+                .original_tree
+                .as_ref()
+                .is_some_and(|original| original == &imp.tree)
+        {
+            result.push_str(&imp.original_block);
+            result.push('\n');
+            continue;
+        }
+
         for line in &imp.leading_lines {
             result.push_str(line);
             result.push('\n');
@@ -710,7 +752,7 @@ fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
             format!("{} ", imp.visibility)
         };
 
-        let formatted = format_use_stmt(&imp.tree, &vis_prefix);
+        let formatted = format_use_stmt(&imp.tree, &vis_prefix, imp.prefer_multiline);
         result.push_str(&formatted);
         result.push('\n');
     }
@@ -719,13 +761,17 @@ fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
 }
 
 /// Format a complete `use` statement from a tree.
-fn format_use_stmt(node: &UseNode, vis_prefix: &str) -> String {
+fn format_use_stmt(node: &UseNode, vis_prefix: &str, prefer_multiline: bool) -> String {
     let path_str = format_node_to_path(node);
     let stmt = format!("{vis_prefix}use {path_str};");
 
     // If it's a simple statement (no braces), just return it
     if !stmt.contains('{') {
         return stmt;
+    }
+
+    if prefer_multiline {
+        return format_use_stmt_multiline(node, vis_prefix, true);
     }
 
     // If it fits on one line and has no nested braces-within-braces, return it
@@ -735,7 +781,7 @@ fn format_use_stmt(node: &UseNode, vis_prefix: &str) -> String {
     }
 
     // Need multi-line formatting
-    format_use_stmt_multiline(node, vis_prefix)
+    format_use_stmt_multiline(node, vis_prefix, true)
 }
 
 /// Get the maximum brace nesting depth in a UseNode tree.
@@ -774,31 +820,36 @@ fn format_node_to_path(node: &UseNode) -> String {
 }
 
 /// Format a use statement with multi-line braces, matching rustfmt behavior.
-fn format_use_stmt_multiline(node: &UseNode, vis_prefix: &str) -> String {
+fn format_use_stmt_multiline(node: &UseNode, vis_prefix: &str, pack_simple_items: bool) -> String {
     // Collect the path segments leading to the first group
     let mut result = format!("{vis_prefix}use ");
-    format_node_multiline(node, &mut result, 0);
+    format_node_multiline(node, &mut result, 0, pack_simple_items);
     result.push(';');
     result
 }
 
 /// Recursively format a node, expanding groups to multiple lines when needed.
-fn format_node_multiline(node: &UseNode, out: &mut String, indent_level: usize) {
+fn format_node_multiline(
+    node: &UseNode,
+    out: &mut String,
+    indent_level: usize,
+    pack_simple_items: bool,
+) {
     match node {
         UseNode::Path { ident, child } => {
             out.push_str(ident);
             out.push_str("::");
             match child.as_ref() {
                 UseNode::Group { items } => {
-                    format_group_multiline(items, out, indent_level);
+                    format_group_multiline(items, out, indent_level, pack_simple_items);
                 }
                 _ => {
-                    format_node_multiline(child, out, indent_level);
+                    format_node_multiline(child, out, indent_level, pack_simple_items);
                 }
             }
         }
         UseNode::Group { items } => {
-            format_group_multiline(items, out, indent_level);
+            format_group_multiline(items, out, indent_level, pack_simple_items);
         }
         // Terminal nodes
         _ => {
@@ -809,7 +860,12 @@ fn format_node_multiline(node: &UseNode, out: &mut String, indent_level: usize) 
 
 /// Format a `{items...}` group, deciding between single-line and multi-line.
 /// When multi-line, packs simple items onto lines up to MAX_LINE_WIDTH (like rustfmt).
-fn format_group_multiline(items: &[UseNode], out: &mut String, indent_level: usize) {
+fn format_group_multiline(
+    items: &[UseNode],
+    out: &mut String,
+    indent_level: usize,
+    pack_simple_items: bool,
+) {
     let child_indent = INDENT.repeat(indent_level + 1);
     let close_indent = INDENT.repeat(indent_level);
 
@@ -826,7 +882,7 @@ fn format_group_multiline(items: &[UseNode], out: &mut String, indent_level: usi
         indent_level * 4 + one_line_len + 10 > MAX_LINE_WIDTH
     };
 
-    if !needs_multiline {
+    if !needs_multiline && pack_simple_items {
         // Single-line group
         let inner: Vec<String> = items.iter().map(format_node_to_path).collect();
         out.push('{');
@@ -835,7 +891,7 @@ fn format_group_multiline(items: &[UseNode], out: &mut String, indent_level: usi
         return;
     }
 
-    // Multi-line group — pack simple items onto lines like rustfmt
+    // Multi-line group
     out.push_str("{\n");
 
     // Separate items into "simple" (no nested groups) and "complex" (has nested groups)
@@ -845,7 +901,12 @@ fn format_group_multiline(items: &[UseNode], out: &mut String, indent_level: usi
         if contains_group(&items[i]) {
             // Complex item: gets its own indented block
             out.push_str(&child_indent);
-            format_node_multiline(&items[i], out, indent_level + 1);
+            format_node_multiline(&items[i], out, indent_level + 1, pack_simple_items);
+            out.push_str(",\n");
+            i += 1;
+        } else if !pack_simple_items {
+            out.push_str(&child_indent);
+            out.push_str(&format_node_to_path(&items[i]));
             out.push_str(",\n");
             i += 1;
         } else {
@@ -1030,6 +1091,22 @@ use serde::Serialize;
         let rule = ImportFormattingRule::new(true, true, true);
         let result = rule.format_imports(input);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_preserve_multiline_grouped_use() {
+        let input = concat!(
+            "use syn::{\n",
+            "    parse::{Parse, ParseStream},\n",
+            "    parse_macro_input,\n",
+            "    punctuated::Punctuated,\n",
+            "    Expr, ExprLit, Item, Lit, Meta, MetaNameValue, Token,\n",
+            "};\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, input);
     }
 
     #[test]

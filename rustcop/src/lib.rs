@@ -8,8 +8,8 @@ use diagnostic::{Diagnostic, Severity};
 use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::{
-    imports::ImportFormattingRule, modules::ModulesRule, super_imports::DisallowSuperImportsRule,
-    wildcard_imports::DisallowWildcardImportsRule, Rule,
+    exports::ExportsRule, imports::ImportFormattingRule, modules::ModulesRule,
+    super_imports::DisallowSuperImportsRule, wildcard_imports::DisallowWildcardImportsRule, Rule,
 };
 use suppression::SuppressionParser;
 
@@ -112,6 +112,7 @@ where
     let rules: Vec<Box<dyn Rule>> = vec![
         Box::new(ImportFormattingRule::from_config(&config)),
         Box::new(ModulesRule::from_config(&config)),
+        Box::new(ExportsRule::from_config(&config)),
         Box::new(DisallowSuperImportsRule::from_config(&config)),
         Box::new(DisallowWildcardImportsRule::from_config(&config)),
     ];

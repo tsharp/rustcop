@@ -355,7 +355,6 @@ impl Default for ImportsConfig {
 pub struct ModulesConfig {
     pub severity: String,
     pub preferred_module_order: Vec<String>,
-    pub allowed_lib_exports: Vec<String>,
 }
 
 impl Default for ModulesConfig {
@@ -368,6 +367,22 @@ impl Default for ModulesConfig {
                 "super".to_string(),
                 "in_crate".to_string(),
             ],
+        }
+    }
+}
+
+/// Configuration for the exports section
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ExportsConfig {
+    pub severity: String,
+    pub allowed_lib_exports: Vec<String>,
+}
+
+impl Default for ExportsConfig {
+    fn default() -> Self {
+        ExportsConfig {
+            severity: "none".to_string(),
             allowed_lib_exports: Vec::new(),
         }
     }

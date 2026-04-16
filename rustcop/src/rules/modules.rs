@@ -1,26 +1,15 @@
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
 use crate::{
     config::{Config, ModulesConfig},
     diagnostic::{Diagnostic, Severity},
     rules::Rule,
 };
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ModulesRuleConfig {
-    pub severity: String,
-    pub preferred_module_order: Vec<String>,
-    pub allowed_lib_exports: Vec<String>,
-}
-
 pub struct ModulesRule {
     enabled: bool,
     severity: Severity,
     preferred_module_order: Vec<String>,
-    allowed_lib_exports: Vec<String>,
 }
 
 impl ModulesRule {
@@ -39,7 +28,6 @@ impl ModulesRule {
             enabled,
             severity,
             preferred_module_order: modules.preferred_module_order,
-            allowed_lib_exports: modules.allowed_lib_exports,
         }
     }
 
@@ -75,40 +63,6 @@ impl Rule for ModulesRule {
                 suppressed: false,
                 suppression_justification: None,
             });
-        }
-
-        let allowed: std::collections::HashSet<&str> = self
-            .allowed_lib_exports
-            .iter()
-            .map(String::as_str)
-            .collect();
-
-        for (i, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("pub mod ") {
-                continue;
-            }
-
-            let parsed = syn::parse_str::<syn::ItemMod>(trimmed);
-            let Ok(item_mod) = parsed else {
-                continue;
-            };
-
-            let name = item_mod.ident.to_string();
-            if !allowed.is_empty() && !allowed.contains(name.as_str()) {
-                diagnostics.push(Diagnostic {
-                    rule_id: "RC3002".to_string(),
-                    message: format!(
-                        "Module `{}` is exported from lib.rs but is not in modules.allowed_lib_exports",
-                        name
-                    ),
-                    file: file.to_path_buf(),
-                    line: i + 1,
-                    severity: self.severity.clone(),
-                    suppressed: false,
-                    suppression_justification: None,
-                });
-            }
         }
 
         diagnostics
@@ -449,7 +403,6 @@ mod tests {
             enabled: true,
             severity: Severity::Error,
             preferred_module_order: vec!["local".to_string(), "crate".to_string()],
-            allowed_lib_exports: Vec::new(),
         };
 
         let fixed = rule.fix(input);
@@ -478,7 +431,6 @@ mod tests {
             enabled: true,
             severity: Severity::Error,
             preferred_module_order: vec!["local".to_string(), "crate".to_string()],
-            allowed_lib_exports: Vec::new(),
         };
 
         let fixed = rule.fix(input);
@@ -508,7 +460,6 @@ mod tests {
             enabled: true,
             severity: Severity::Error,
             preferred_module_order: vec!["local".to_string(), "crate".to_string()],
-            allowed_lib_exports: Vec::new(),
         };
 
         let fixed = rule.fix(input);
@@ -523,21 +474,5 @@ mod tests {
             "pub use zed::Thing;\n",
         );
         assert_eq!(fixed, expected);
-    }
-
-    #[test]
-    fn test_reports_disallowed_lib_exports() {
-        let content = concat!("pub mod config;\n", "pub mod secret;\n",);
-
-        let rule = ModulesRule {
-            enabled: true,
-            severity: Severity::Error,
-            preferred_module_order: vec!["local".to_string()],
-            allowed_lib_exports: vec!["config".to_string()],
-        };
-
-        let diags = rule.check(content, Path::new("lib.rs"));
-        assert!(diags.iter().any(|d| d.rule_id == "RC3002"));
-        assert!(diags.iter().any(|d| d.message.contains("secret")));
     }
 }
