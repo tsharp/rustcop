@@ -18,6 +18,7 @@ use diagnostic::{Diagnostic, Severity};
 use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::imports::ImportFormattingRule;
+use rules::super_imports::DisallowSuperImportsRule;
 use rules::Rule;
 use suppression::SuppressionParser;
 
@@ -106,7 +107,10 @@ where
 
     // Build the set of enabled rules
     // Import formatting rule is enabled by default
-    let rules: Vec<Box<dyn Rule>> = vec![Box::new(ImportFormattingRule::from_config(&config))];
+    let rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(ImportFormattingRule::from_config(&config)),
+        Box::new(DisallowSuperImportsRule::from_config(&config)),
+    ];
 
     if rules.is_empty() {
         println!("No rules enabled – nothing to do.");
@@ -115,8 +119,11 @@ where
 
     let mut total_diagnostics = 0usize;
     let mut total_errors = 0usize;
+    let mut total_warnings = 0usize;
     let mut files_fixed = 0usize;
     let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
+
+    let treat_warnings_as_errors = config.treat_warnings_as_errors();
 
     for file in &files {
         let mut content = match std::fs::read_to_string(file) {
@@ -152,6 +159,10 @@ where
             total_errors += diagnostics
                 .iter()
                 .filter(|d| !d.suppressed && matches!(d.severity, Severity::Error))
+                .count();
+            total_warnings += diagnostics
+                .iter()
+                .filter(|d| !d.suppressed && matches!(d.severity, Severity::Warning))
                 .count();
 
             // Collect for structured output (include all diagnostics even suppressed ones)
@@ -239,6 +250,56 @@ where
             all_diagnostics.push(diagnostic);
         }
 
+        // Check for suppressions without justification (if required by config)
+        if config.require_suppression_justification() {
+            let suppressions_without_justification =
+                suppression_parser.get_suppressions_without_justification();
+            for suppression in suppressions_without_justification {
+                let (directive_line, description) = match suppression {
+                    suppression::Suppression::FileLevel { directive_line, .. } => {
+                        (*directive_line, "file-level suppression".to_string())
+                    }
+                    suppression::Suppression::LineLevel {
+                        directive_line,
+                        line,
+                        ..
+                    } => (*directive_line, format!("suppression on line {}", line)),
+                    suppression::Suppression::SpecificRule {
+                        directive_line,
+                        rule,
+                        line,
+                        ..
+                    } => (
+                        *directive_line,
+                        format!("suppression for rule {} on line {}", rule, line),
+                    ),
+                };
+
+                let diagnostic = Diagnostic {
+                    rule_id: "RC9002".to_string(),
+                    message: format!("Suppression missing justification: {}", description),
+                    file: file.clone(),
+                    line: directive_line,
+                    severity: Severity::Error,
+                    suppressed: false,
+                    suppression_justification: None,
+                };
+
+                // Print the error
+                println!(
+                    "{} {} [{}]: {}",
+                    format!("{}:{}", file.display(), diagnostic.line).bold(),
+                    "error".red(),
+                    diagnostic.rule_id.dimmed(),
+                    diagnostic.message,
+                );
+
+                total_diagnostics += 1;
+                total_errors += 1;
+                all_diagnostics.push(diagnostic);
+            }
+        }
+
         if file_changed {
             if let Err(e) = std::fs::write(file, &content) {
                 eprintln!("{} could not write {}: {e}", "error:".red(), file.display());
@@ -283,7 +344,7 @@ where
                 remaining_errors,
                 remaining_warnings
             );
-            if remaining_errors > 0 {
+            if remaining_errors > 0 || (treat_warnings_as_errors && remaining_warnings > 0) {
                 process::exit(1);
             }
         } else {
@@ -295,8 +356,8 @@ where
             total_diagnostics,
             files.len()
         );
-        // Only exit with error code if there are actual errors, not just warnings
-        if total_errors > 0 {
+        // Exit with error code if there are errors, or if warnings-as-errors is enabled
+        if total_errors > 0 || (treat_warnings_as_errors && total_warnings > 0) {
             process::exit(1);
         }
     } else {

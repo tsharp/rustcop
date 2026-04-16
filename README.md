@@ -134,7 +134,9 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 | ID | Name | Description |
 |----|------|-------------|
 | RC1001 | ImportFormatting | Groups, sorts, and merges `use` statements |
+| RC2001 | DisallowSuperImports | Reports use of `super::` imports when configured |
 | RC9001 | UnusedSuppression | Reports suppression directives that don't suppress any diagnostics |
+| RC9002 | MissingSuppressionJustification | Reports suppressions without justifications when `require_suppression_justification = true` |
 
 Import formatting follows `rustfmt` conventions:
 - **Grouping** — standard library first, then third-party crates, then internal (`crate`/`self`/`super`), separated by blank lines.
@@ -147,6 +149,12 @@ RustCop generates an error (RC9001) for any suppression directive that doesn't a
 - Suppressions added for issues that have since been fixed
 - Suppressions targeting the wrong line or rule
 - Suppressions for rules that don't exist or aren't enabled
+
+**Suppression Justification Enforcement:**
+When `require_suppression_justification = true` in your config, RustCop generates an error (RC9002) for any suppression that lacks a justification comment. This helps maintain documentation of why rules are being suppressed.
+
+**Super Import Validation:**
+When `[lints.disallow_super_imports]` is configured with `severity = "error"`, RustCop generates an error (RC2001) for any use of `super::` imports. This can be useful for enforcing explicit import paths.
 
 ## License
 
