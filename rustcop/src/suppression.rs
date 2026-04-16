@@ -72,10 +72,7 @@ impl SuppressionParser {
             let after_marker = Self::parse_standalone_comment_marker(line, "rustcop::ignore-file")
                 .or_else(|| Self::parse_standalone_comment_marker(line, "rustcop:ignore-file"));
             if let Some(after_marker) = after_marker {
-                return Some((
-                    i + 1,
-                    Self::extract_trailing_justification(after_marker),
-                ));
+                return Some((i + 1, Self::extract_trailing_justification(after_marker)));
             }
 
             let trimmed = line.trim();
@@ -213,10 +210,10 @@ impl SuppressionParser {
             }
 
             let attr_text = &rest[..=attr_end.unwrap()];
-            
+
             // The directive is on this line
             let directive_line = line_num;
-            
+
             // The suppression applies to the next line (the item itself)
             let target_line = line_num + 1;
 
@@ -225,7 +222,7 @@ impl SuppressionParser {
                 // #[rustcop::ignore(RC1001, justification = "reason")]
                 let start_paren = attr_text.find('(');
                 let end_paren = attr_text.rfind(')');
-                
+
                 if let (Some(start), Some(end)) = (start_paren, end_paren) {
                     let args = &attr_text[start + 1..end];
                     Self::parse_attribute_args(args)
@@ -269,7 +266,7 @@ impl SuppressionParser {
         // Split by comma and process each part
         for part in tokens.split(',') {
             let part = part.trim();
-            
+
             if part.starts_with("justification") {
                 // Extract justification value: justification = "text"
                 if let Some(eq_pos) = part.find('=') {
@@ -619,7 +616,7 @@ fn my_function() {
 
         let mut parser = SuppressionParser::parse(content);
         assert!(!parser.suppressions.is_empty());
-        
+
         // Should suppress line 3 (the function line)
         assert!(parser.is_suppressed(3, "RC1001").0);
         assert!(parser.is_suppressed(3, "RC9999").0); // Any rule
@@ -635,10 +632,10 @@ fn my_function() {
 "#;
 
         let mut parser = SuppressionParser::parse(content);
-        
+
         // Should suppress RC1001 on line 3
         assert!(parser.is_suppressed(3, "RC1001").0);
-        
+
         // Should NOT suppress other rules
         assert!(!parser.is_suppressed(3, "RC2001").0);
     }
@@ -653,7 +650,7 @@ fn my_function() {
 "#;
 
         let mut parser = SuppressionParser::parse(content);
-        
+
         let (is_suppressed, justification) = parser.is_suppressed(3, "RC1001");
         assert!(is_suppressed);
         assert_eq!(justification.as_deref(), Some("Legacy code"));
@@ -669,7 +666,7 @@ fn my_function() {
 "#;
 
         let mut parser = SuppressionParser::parse(content);
-        
+
         assert!(parser.is_suppressed(3, "RC1001").0);
         assert!(parser.is_suppressed(3, "RC1002").0);
         assert!(!parser.is_suppressed(3, "RC3001").0);
@@ -685,9 +682,9 @@ fn my_function() {
 "#;
 
         let parser = SuppressionParser::parse(content);
-        
+
         // Don't check any diagnostics - leave the suppression unused
-        
+
         let unused = parser.get_unused_suppressions();
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].directive_line, 2); // The attribute is on line 2

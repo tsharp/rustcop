@@ -195,8 +195,10 @@ mod tests {
             message: "Test message".to_string(),
             file: PathBuf::from("test.rs"),
             line: 42,
-            severity: Severity::Warning,            suppressed: false,
-            suppression_justification: None,        }];
+            severity: Severity::Warning,
+            suppressed: false,
+            suppression_justification: None,
+        }];
 
         let json = generate_json(&diagnostics).unwrap();
         assert!(json.contains("RC1001"));
@@ -248,11 +250,11 @@ mod tests {
         ];
 
         let sarif = generate_sarif(&diagnostics).unwrap();
-        
+
         // Should contain both diagnostics
         assert!(sarif.contains("RC1001"));
         assert!(sarif.contains("RC1002"));
-        
+
         // Should contain suppression info
         assert!(sarif.contains("suppressions"));
         assert!(sarif.contains("inSource"));
@@ -261,17 +263,15 @@ mod tests {
 
     #[test]
     fn test_json_output_with_suppression() {
-        let diagnostics = vec![
-            Diagnostic {
-                rule_id: "RC1001".to_string(),
-                message: "Suppressed with justification".to_string(),
-                file: PathBuf::from("test.rs"),
-                line: 10,
-                severity: Severity::Warning,
-                suppressed: true,
-                suppression_justification: Some("Legacy API".to_string()),
-            },
-        ];
+        let diagnostics = vec![Diagnostic {
+            rule_id: "RC1001".to_string(),
+            message: "Suppressed with justification".to_string(),
+            file: PathBuf::from("test.rs"),
+            line: 10,
+            severity: Severity::Warning,
+            suppressed: true,
+            suppression_justification: Some("Legacy API".to_string()),
+        }];
 
         let json = generate_json(&diagnostics).unwrap();
         assert!(json.contains("RC1001"));

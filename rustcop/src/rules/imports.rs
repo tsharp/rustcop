@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use syn::{Item, UseTree};
+use syn::UseTree;
 
 use crate::{
     config::Config,
@@ -32,6 +32,10 @@ struct NormalizedUse {
     visibility: String,
     tree: UseNode,
     group: ImportGroup,
+    leading_lines: Vec<String>,
+    original_block: String,
+    mergeable: bool,
+    skip_format: bool,
 }
 
 /// Recursive tree representation of a use path, mirroring syn::UseTree
@@ -90,35 +94,12 @@ impl ImportFormattingRule {
             return content.to_string();
         };
 
-        // Separate super imports from other imports
-        // Super imports should not be auto-formatted (manual only)
-        let mut super_imports: Vec<(usize, &str)> = Vec::new();
-        let mut other_lines: Vec<&str> = Vec::new();
-        
-        for (idx, line) in lines[region_start..=region_end].iter().enumerate() {
-            let trimmed = line.trim();
-            if is_super_import(trimmed) {
-                super_imports.push((idx, line));
-            } else {
-                other_lines.push(line);
-            }
-        }
-
-        // If all imports are super imports, return unchanged
-        if other_lines.is_empty() {
-            return content.to_string();
-        }
-
-        // Extract the raw text of non-super imports and parse with syn
-        let region_text: String = other_lines
-            .iter()
-            .map(|l| format!("{l}\n"))
-            .collect();
-
-        let mut imports = match parse_use_items(&region_text) {
+        let parsed = match parse_use_items(&lines[region_start..=region_end]) {
             Some(imports) if !imports.is_empty() => imports,
             _ => return content.to_string(),
         };
+
+        let mut imports = parsed;
 
         // Merge imports sharing the same root
         if self.merge {
@@ -150,17 +131,6 @@ impl ImportFormattingRule {
         // Lines before the use region
         for line in &lines[..region_start] {
             result.push_str(line);
-            result.push('\n');
-        }
-
-        // Insert super imports at the beginning (preserve original formatting)
-        for (_, line) in &super_imports {
-            result.push_str(line);
-            result.push('\n');
-        }
-
-        // Add blank line if there are super imports and other imports
-        if !super_imports.is_empty() && !formatted.is_empty() {
             result.push('\n');
         }
 
@@ -229,25 +199,117 @@ impl Rule for ImportFormattingRule {
 // Parsing – syn-based
 // ---------------------------------------------------------------------------
 
-/// Parse the use-region text with syn and convert to our internal representation.
-fn parse_use_items(region_text: &str) -> Option<Vec<NormalizedUse>> {
-    let file: syn::File = syn::parse_str(region_text).ok()?;
+/// Parse use statements from region lines while retaining leading trivia.
+fn parse_use_items(region_lines: &[&str]) -> Option<Vec<NormalizedUse>> {
+    let blocks = parse_import_blocks(region_lines);
     let mut result = Vec::new();
 
-    for item in &file.items {
-        if let Item::Use(item_use) = item {
-            let vis = format_visibility(&item_use.vis);
-            let tree = use_tree_to_node(&item_use.tree);
-            let group = classify_node(&tree);
-            result.push(NormalizedUse {
-                visibility: vis,
-                tree,
-                group,
-            });
-        }
+    for block in blocks {
+        let item_use: syn::ItemUse = syn::parse_str(&block.use_text).ok()?;
+        let vis = format_visibility(&item_use.vis);
+        let tree = use_tree_to_node(&item_use.tree);
+        let group = classify_node(&tree);
+
+        let has_tag = block.leading_lines.iter().any(|line| {
+            let trimmed = line.trim();
+            is_attribute_line(trimmed) || is_macro_tag_line(trimmed)
+        });
+        let is_super = root_ident(&tree) == "super";
+
+        result.push(NormalizedUse {
+            visibility: vis,
+            tree,
+            group,
+            leading_lines: block.leading_lines,
+            original_block: block.original_block,
+            mergeable: !has_tag && !is_super,
+            skip_format: has_tag || is_super,
+        });
     }
 
     Some(result)
+}
+
+#[derive(Debug)]
+struct ImportBlock {
+    leading_lines: Vec<String>,
+    use_text: String,
+    original_block: String,
+}
+
+fn parse_import_blocks(region_lines: &[&str]) -> Vec<ImportBlock> {
+    let mut blocks = Vec::new();
+    let mut pending_leading: Vec<String> = Vec::new();
+    let mut i = 0;
+
+    while i < region_lines.len() {
+        let line = region_lines[i];
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if !pending_leading.is_empty() {
+                pending_leading.push(line.to_string());
+            }
+            i += 1;
+            continue;
+        }
+
+        if is_attachable_line(trimmed) && !is_use_line(trimmed) {
+            pending_leading.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        if is_use_line(trimmed) {
+            let end = consume_use_stmt_end(region_lines, i);
+            let use_lines: Vec<String> = region_lines[i..=end]
+                .iter()
+                .map(|l| l.to_string())
+                .collect();
+            let use_text = use_lines.join("\n");
+
+            let mut block_lines = pending_leading.clone();
+            block_lines.extend(use_lines);
+
+            blocks.push(ImportBlock {
+                leading_lines: pending_leading,
+                use_text,
+                original_block: block_lines.join("\n"),
+            });
+
+            pending_leading = Vec::new();
+            i = end + 1;
+            continue;
+        }
+
+        pending_leading.clear();
+        i += 1;
+    }
+
+    blocks
+}
+
+fn consume_use_stmt_end(lines: &[&str], start: usize) -> usize {
+    let mut i = start;
+    let mut brace_depth = 0i32;
+
+    while i < lines.len() {
+        for ch in lines[i].chars() {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        if brace_depth <= 0 && lines[i].contains(';') {
+            return i;
+        }
+
+        i += 1;
+    }
+
+    lines.len().saturating_sub(1)
 }
 
 /// Convert syn::UseTree to our UseNode.
@@ -326,10 +388,28 @@ fn is_use_line(trimmed: &str) -> bool {
         || (trimmed.starts_with("pub(") && trimmed.contains(") use "))
 }
 
-fn is_super_import(trimmed: &str) -> bool {
-    trimmed.starts_with("use super::")
-        || trimmed.starts_with("pub use super::")
-        || (trimmed.starts_with("pub(") && trimmed.contains(") use super::"))
+fn is_attribute_line(trimmed: &str) -> bool {
+    trimmed.starts_with("#[") || trimmed.starts_with("#![")
+}
+
+fn is_macro_tag_line(trimmed: &str) -> bool {
+    if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+        return false;
+    }
+
+    let ident_start = trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+
+    ident_start && trimmed.contains('!')
+}
+
+fn is_attachable_line(trimmed: &str) -> bool {
+    trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || is_attribute_line(trimmed)
+        || is_macro_tag_line(trimmed)
 }
 
 fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
@@ -357,7 +437,7 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
 
         if is_use_line(trimmed) {
             if first_use.is_none() {
-                first_use = Some(i);
+                first_use = Some(backtrack_attached_prefix(lines, i));
             }
             found_any_use = true;
             for ch in trimmed.chars() {
@@ -368,8 +448,8 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
                 }
             }
             last_use_end = i;
-        } else if found_any_use && (trimmed.is_empty() || trimmed.starts_with("//")) {
-            // blank line or comment between uses – keep scanning
+        } else if found_any_use && (trimmed.is_empty() || is_attachable_line(trimmed)) {
+            // blank line or attached trivia between uses – keep scanning
         } else if found_any_use {
             break;
         }
@@ -378,6 +458,19 @@ fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
     }
 
     first_use.map(|start| (start, last_use_end))
+}
+
+fn backtrack_attached_prefix(lines: &[&str], use_line_idx: usize) -> usize {
+    let mut start = use_line_idx;
+    while start > 0 {
+        let prev = lines[start - 1].trim();
+        if prev.is_empty() || is_attachable_line(prev) {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    start
 }
 
 // ---------------------------------------------------------------------------
@@ -466,14 +559,19 @@ fn merge_imports(imports: Vec<NormalizedUse>) -> Vec<NormalizedUse> {
 
     // Group by (visibility, root_ident)
     let mut by_key: BTreeMap<(String, String), Vec<NormalizedUse>> = BTreeMap::new();
+    let mut non_mergeable = Vec::new();
 
     for imp in imports {
+        if !imp.mergeable {
+            non_mergeable.push(imp);
+            continue;
+        }
         let root = root_ident(&imp.tree);
         let key = (imp.visibility.clone(), root);
         by_key.entry(key).or_default().push(imp);
     }
 
-    by_key
+    let mut merged: Vec<NormalizedUse> = by_key
         .into_values()
         .map(|group| {
             if group.len() == 1 {
@@ -517,9 +615,16 @@ fn merge_imports(imports: Vec<NormalizedUse>) -> Vec<NormalizedUse> {
                 visibility: vis,
                 tree,
                 group: grp,
+                leading_lines: Vec::new(),
+                original_block: String::new(),
+                mergeable: true,
+                skip_format: false,
             }
         })
-        .collect()
+        .collect();
+
+    merged.extend(non_mergeable);
+    merged
 }
 
 /// Extract the children (everything after the root segment) for merging.
@@ -560,6 +665,17 @@ fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
             }
         }
         prev_group = Some(imp.group);
+
+        if imp.skip_format {
+            result.push_str(&imp.original_block);
+            result.push('\n');
+            continue;
+        }
+
+        for line in &imp.leading_lines {
+            result.push_str(line);
+            result.push('\n');
+        }
 
         let vis_prefix = if imp.visibility.is_empty() {
             String::new()
@@ -828,5 +944,64 @@ use documentdb_gateway_core::{
         let rule = ImportFormattingRule::new(true, true, true);
         let result = rule.format_imports(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_attribute_attached_import_left_alone() {
+        let input = concat!(
+            "#[cfg(feature = \"io_uring\")]\n",
+            "use std::path::PathBuf;\n",
+            "use std::collections::HashMap;\n",
+        );
+
+        let expected = concat!(
+            "use std::collections::HashMap;\n",
+            "#[cfg(feature = \"io_uring\")]\n",
+            "use std::path::PathBuf;\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_tagged_import_stays_with_group_not_merged() {
+        let input = concat!(
+            "use serde::Deserialize;\n",
+            "#[cfg(feature = \"io_uring\")]\n",
+            "use serde::Serialize;\n",
+            "use std::fmt;\n",
+        );
+
+        let expected = concat!(
+            "use std::fmt;\n",
+            "\n",
+            "use serde::Deserialize;\n",
+            "#[cfg(feature = \"io_uring\")]\n",
+            "use serde::Serialize;\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_comment_moves_with_sorted_import() {
+        let input = r#"// keep this with serde import
+use serde::Serialize;
+use std::fmt;
+"#;
+
+        let expected = r#"use std::fmt;
+
+// keep this with serde import
+use serde::Serialize;
+"#;
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
     }
 }

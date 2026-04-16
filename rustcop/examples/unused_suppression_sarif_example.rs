@@ -64,9 +64,21 @@ fn foo() {}
     println!("\nDiagnostics generated:");
     for d in &diagnostics {
         if d.suppressed {
-            println!("  ✓ {}:{} [{}] {} (SUPPRESSED)", d.file.display(), d.line, d.rule_id, d.message);
+            println!(
+                "  ✓ {}:{} [{}] {} (SUPPRESSED)",
+                d.file.display(),
+                d.line,
+                d.rule_id,
+                d.message
+            );
         } else {
-            println!("  ✗ {}:{} [{}] {}", d.file.display(), d.line, d.rule_id, d.message);
+            println!(
+                "  ✗ {}:{} [{}] {}",
+                d.file.display(),
+                d.line,
+                d.rule_id,
+                d.message
+            );
         }
     }
 }

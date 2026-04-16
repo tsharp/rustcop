@@ -11,6 +11,11 @@ treat_warnings_as_errors = false
 # Default: true
 require_suppression_justification = true
 
+[modules]
+severity = "error"
+preferred_module_order = ["local", "crate", "super", "in_crate"]
+allowed_lib_pub
+
 [imports]
 # Controls whether compatible `use` statements should be grouped together.
 # When true, the formatter may combine and organize imports into logical blocks.

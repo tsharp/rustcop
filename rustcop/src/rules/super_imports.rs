@@ -73,7 +73,11 @@ impl Rule for DisallowSuperImportsRule {
             let trimmed = line.trim();
 
             // Skip if in test region
-            if self.allow_in_tests && test_regions.iter().any(|(start, end)| line_idx >= *start && line_idx <= *end) {
+            if self.allow_in_tests
+                && test_regions
+                    .iter()
+                    .any(|(start, end)| line_idx >= *start && line_idx <= *end)
+            {
                 continue;
             }
 

@@ -60,7 +60,9 @@ const X: i32 = 42;
                 "  ✓ {} at line {} - SUPPRESSED ({})",
                 d.rule_id,
                 d.line,
-                d.suppression_justification.as_deref().unwrap_or("no reason")
+                d.suppression_justification
+                    .as_deref()
+                    .unwrap_or("no reason")
             );
         } else {
             println!("  ✗ {} at line {} - ACTIVE", d.rule_id, d.line);

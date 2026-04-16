@@ -8,9 +8,6 @@ use crate::{
     rules::Rule,
 };
 
-#[cfg(feature = "io_uring")]
-use std::path::PathBuf;
-
 /// Configuration for disallow_wildcard_imports rule
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -34,7 +31,10 @@ impl DisallowWildcardImportsRule {
         let enabled = lint_config.severity != "none";
 
         let rule_config = config
-            .get_nested_config::<DisallowWildcardImportsConfig>(&["lints", "disallow_wildcard_imports"])
+            .get_nested_config::<DisallowWildcardImportsConfig>(&[
+                "lints",
+                "disallow_wildcard_imports",
+            ])
             .unwrap_or_default();
 
         Self {
@@ -76,7 +76,11 @@ impl Rule for DisallowWildcardImportsRule {
             let trimmed = line.trim();
 
             // Skip if in test region
-            if self.allow_in_tests && test_regions.iter().any(|(start, end)| line_idx >= *start && line_idx <= *end) {
+            if self.allow_in_tests
+                && test_regions
+                    .iter()
+                    .any(|(start, end)| line_idx >= *start && line_idx <= *end)
+            {
                 continue;
             }
 

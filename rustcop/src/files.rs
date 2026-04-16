@@ -99,10 +99,7 @@ fn workspace_member_src_dirs(path: &Path) -> Vec<PathBuf> {
 /// Returns true for workspace root directories (., .., or paths not starting with src/)
 fn should_restrict_to_src(path: &Path) -> bool {
     // Get the last component of the path
-    let last_component = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let last_component = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     // If it's "." or ".." or has no components, restrict to src
     if last_component.is_empty() || last_component == "." || last_component == ".." {

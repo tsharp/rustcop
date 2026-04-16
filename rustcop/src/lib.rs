@@ -240,7 +240,8 @@ where
             };
 
             // Allow suppressing generated suppression diagnostics as well.
-            let (is_suppressed, _) = suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+            let (is_suppressed, _) =
+                suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
             if is_suppressed {
                 continue;
             }
@@ -338,15 +339,27 @@ where
                 Ok(c) => c,
                 Err(_) => continue,
             };
+
+            let mut suppression_parser = SuppressionParser::parse(&content);
+
             for rule in &rules {
-                let diags = rule.check(&content, file);
+                let mut diags = rule.check(&content, file);
+                for diagnostic in &mut diags {
+                    let (is_suppressed, justification) =
+                        suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+                    if is_suppressed {
+                        diagnostic.suppressed = true;
+                        diagnostic.suppression_justification = justification;
+                    }
+                }
+
                 remaining_errors += diags
                     .iter()
-                    .filter(|d| matches!(d.severity, Severity::Error))
+                    .filter(|d| !d.suppressed && matches!(d.severity, Severity::Error))
                     .count();
                 remaining_warnings += diags
                     .iter()
-                    .filter(|d| matches!(d.severity, Severity::Warning))
+                    .filter(|d| !d.suppressed && matches!(d.severity, Severity::Warning))
                     .count();
             }
         }
