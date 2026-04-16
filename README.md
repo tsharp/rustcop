@@ -134,12 +134,19 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 | ID | Name | Description |
 |----|------|-------------|
 | RC1001 | ImportFormatting | Groups, sorts, and merges `use` statements |
+| RC9001 | UnusedSuppression | Reports suppression directives that don't suppress any diagnostics |
 
 Import formatting follows `rustfmt` conventions:
 - **Grouping** — standard library first, then third-party crates, then internal (`crate`/`self`/`super`), separated by blank lines.
 - **Sorting** — alphabetical within each group.
 - **Merging** — multiple imports from the same crate are combined into a single `use` block.
 - **Multi-line expansion** — imports with nested braces are expanded to one item per line.
+
+**Unused Suppression Detection:**
+RustCop generates an error (RC9001) for any suppression directive that doesn't actually suppress any diagnostics. This helps keep your codebase clean by detecting:
+- Suppressions added for issues that have since been fixed
+- Suppressions targeting the wrong line or rule
+- Suppressions for rules that don't exist or aren't enabled
 
 ## License
 

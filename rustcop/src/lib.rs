@@ -19,6 +19,7 @@ use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::imports::ImportFormattingRule;
 use rules::Rule;
+use suppression::SuppressionParser;
 
 #[derive(Parser)]
 #[command(
@@ -126,25 +127,50 @@ where
             }
         };
 
+        // Parse suppressions from the file
+        let mut suppression_parser = SuppressionParser::parse(&content);
+
         let mut file_changed = false;
+        let mut file_diagnostics = Vec::new();
 
         for rule in &rules {
-            let diagnostics = rule.check(&content, file);
-            total_diagnostics += diagnostics.len();
+            let mut diagnostics = rule.check(&content, file);
+
+            // Check each diagnostic against suppressions
+            for diagnostic in &mut diagnostics {
+                let (is_suppressed, justification) =
+                    suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+                if is_suppressed {
+                    diagnostic.suppressed = true;
+                    diagnostic.suppression_justification = justification;
+                }
+            }
+
+            // Count diagnostics (suppressed diagnostics still count for stats but not for printing)
+            let unsuppressed_count = diagnostics.iter().filter(|d| !d.suppressed).count();
+            total_diagnostics += unsuppressed_count;
             total_errors += diagnostics
                 .iter()
-                .filter(|d| matches!(d.severity, Severity::Error))
+                .filter(|d| !d.suppressed && matches!(d.severity, Severity::Error))
                 .count();
 
-            // Collect for structured output
+            // Collect for structured output (include all diagnostics even suppressed ones)
             all_diagnostics.extend(diagnostics.clone());
+            file_diagnostics.extend(diagnostics.clone());
 
-            if is_fix && !diagnostics.is_empty() {
+            // Only process unsuppressed diagnostics for fix/display
+            let unsuppressed_diagnostics: Vec<_> = diagnostics
+                .iter()
+                .filter(|d| !d.suppressed)
+                .cloned()
+                .collect();
+
+            if is_fix && !unsuppressed_diagnostics.is_empty() {
                 let fixed = rule.fix(&content);
                 if fixed != content {
                     content = fixed;
                     file_changed = true;
-                    for d in &diagnostics {
+                    for d in &unsuppressed_diagnostics {
                         println!(
                             "{} {} [{}]: {} {}",
                             format!("{}:{}", file.display(), d.line).bold(),
@@ -155,7 +181,7 @@ where
                         );
                     }
                 } else {
-                    for d in &diagnostics {
+                    for d in &unsuppressed_diagnostics {
                         let sev = match d.severity {
                             Severity::Warning => "warning".yellow(),
                             Severity::Error => "error".red(),
@@ -170,7 +196,7 @@ where
                     }
                 }
             } else {
-                for d in &diagnostics {
+                for d in &unsuppressed_diagnostics {
                     let sev = match d.severity {
                         Severity::Warning => "warning".yellow(),
                         Severity::Error => "error".red(),
@@ -184,6 +210,33 @@ where
                     );
                 }
             }
+        }
+
+        // After checking all rules, look for unused suppressions
+        let unused_suppressions = suppression_parser.get_unused_suppressions();
+        for unused in unused_suppressions {
+            let diagnostic = Diagnostic {
+                rule_id: "RC9001".to_string(),
+                message: format!("Unused suppression: {}", unused.description),
+                file: file.clone(),
+                line: unused.directive_line,
+                severity: Severity::Error,
+                suppressed: false,
+                suppression_justification: None,
+            };
+
+            // Print the error
+            println!(
+                "{} {} [{}]: {}",
+                format!("{}:{}", file.display(), diagnostic.line).bold(),
+                "error".red(),
+                diagnostic.rule_id.dimmed(),
+                diagnostic.message,
+            );
+
+            total_diagnostics += 1;
+            total_errors += 1;
+            all_diagnostics.push(diagnostic);
         }
 
         if file_changed {
