@@ -23,7 +23,7 @@ name = "sarif_suppression_example"
 path = "../examples/sarif_suppression_example.rs"
 
 [dependencies]
-rustcop-macros = { path = "../rustcop-macros" }
+rustcop-macros = { path = "../rustcop-macros", version = "0.2.0" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -10,5 +10,5 @@ fix:
 	cargo run -p rustcop -- fix
 
 publish:
-	cargo publish -p rustcop
 	cargo publish -p rustcop-macros
+	cargo publish -p rustcop
