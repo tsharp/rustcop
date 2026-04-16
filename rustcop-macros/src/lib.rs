@@ -38,9 +38,10 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn::{parse_macro_input, Expr, ExprLit, Item, Lit, Meta, MetaNameValue, Token};
+use syn::{
+    parse::{Parse, ParseStream},
+    parse_macro_input, punctuated::Punctuated, Expr, ExprLit, Item, Lit, Meta, MetaNameValue, Token,
+};
 
 /// Arguments for the rustcop::ignore attribute
 #[allow(dead_code)]

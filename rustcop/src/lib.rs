@@ -11,6 +11,7 @@ pub mod rules;
 pub mod suppression;
 
 // Re-export the procedural macros for users
+// rustcop::ignore RC2002: This is expected to be a wildcard export.
 pub use rustcop_macros::*;
 
 use config::Config;
@@ -19,6 +20,7 @@ use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::imports::ImportFormattingRule;
 use rules::super_imports::DisallowSuperImportsRule;
+use rules::wildcard_imports::DisallowWildcardImportsRule;
 use rules::Rule;
 use suppression::SuppressionParser;
 
@@ -110,6 +112,7 @@ where
     let rules: Vec<Box<dyn Rule>> = vec![
         Box::new(ImportFormattingRule::from_config(&config)),
         Box::new(DisallowSuperImportsRule::from_config(&config)),
+        Box::new(DisallowWildcardImportsRule::from_config(&config)),
     ];
 
     if rules.is_empty() {
@@ -236,6 +239,12 @@ where
                 suppression_justification: None,
             };
 
+            // Allow suppressing generated suppression diagnostics as well.
+            let (is_suppressed, _) = suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+            if is_suppressed {
+                continue;
+            }
+
             // Print the error
             println!(
                 "{} {} [{}]: {}",
@@ -252,10 +261,10 @@ where
 
         // Check for suppressions without justification (if required by config)
         if config.require_suppression_justification() {
-            let suppressions_without_justification =
-                suppression_parser.get_suppressions_without_justification();
-            for suppression in suppressions_without_justification {
-                let (directive_line, description) = match suppression {
+            let suppressions_without_justification: Vec<(usize, String)> = suppression_parser
+                .get_suppressions_without_justification()
+                .iter()
+                .map(|suppression| match suppression {
                     suppression::Suppression::FileLevel { directive_line, .. } => {
                         (*directive_line, "file-level suppression".to_string())
                     }
@@ -273,8 +282,10 @@ where
                         *directive_line,
                         format!("suppression for rule {} on line {}", rule, line),
                     ),
-                };
+                })
+                .collect();
 
+            for (directive_line, description) in suppressions_without_justification {
                 let diagnostic = Diagnostic {
                     rule_id: "RC9002".to_string(),
                     message: format!("Suppression missing justification: {}", description),
@@ -284,6 +295,12 @@ where
                     suppressed: false,
                     suppression_justification: None,
                 };
+
+                let (is_suppressed, _) =
+                    suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+                if is_suppressed {
+                    continue;
+                }
 
                 // Print the error
                 println!(

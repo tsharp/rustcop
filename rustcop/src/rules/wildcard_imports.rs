@@ -8,30 +8,33 @@ use crate::{
     rules::Rule,
 };
 
-/// Configuration for disallow_super_imports rule
+#[cfg(feature = "io_uring")]
+use std::path::PathBuf;
+
+/// Configuration for disallow_wildcard_imports rule
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct DisallowSuperImportsConfig {
-    /// Allow super imports in test modules
+pub struct DisallowWildcardImportsConfig {
+    /// Allow wildcard imports in test modules
     pub allow_in_tests: bool,
 }
 
-/// Rule that disallows `super::` imports
-pub struct DisallowSuperImportsRule {
+/// Rule that disallows wildcard imports (use foo::*)
+pub struct DisallowWildcardImportsRule {
     enabled: bool,
     allow_in_tests: bool,
 }
 
-impl DisallowSuperImportsRule {
+impl DisallowWildcardImportsRule {
     pub fn from_config(config: &Config) -> Self {
         let lint_config = config
-            .get_nested_config::<LintConfig>(&["lints", "disallow_super_imports"])
+            .get_nested_config::<LintConfig>(&["lints", "disallow_wildcard_imports"])
             .unwrap_or_default();
 
         let enabled = lint_config.severity != "none";
 
         let rule_config = config
-            .get_nested_config::<DisallowSuperImportsConfig>(&["lints", "disallow_super_imports"])
+            .get_nested_config::<DisallowWildcardImportsConfig>(&["lints", "disallow_wildcard_imports"])
             .unwrap_or_default();
 
         Self {
@@ -41,13 +44,13 @@ impl DisallowSuperImportsRule {
     }
 }
 
-impl Rule for DisallowSuperImportsRule {
+impl Rule for DisallowWildcardImportsRule {
     fn id(&self) -> &str {
-        "RC2001"
+        "RC2002"
     }
 
     fn name(&self) -> &str {
-        "DisallowSuperImports"
+        "DisallowWildcardImports"
     }
 
     fn check(&self, content: &str, file: &Path) -> Vec<Diagnostic> {
@@ -77,11 +80,14 @@ impl Rule for DisallowSuperImportsRule {
                 continue;
             }
 
-            // Check for `use super::` patterns
-            if trimmed.starts_with("use super::") || trimmed.starts_with("pub use super::") {
+            // Check for wildcard import patterns (::*)
+            // Match patterns like: use foo::*; pub use bar::*; use foo::{bar, *};
+            if (trimmed.starts_with("use ") || trimmed.starts_with("pub use "))
+                && trimmed.contains("::*")
+            {
                 diagnostics.push(Diagnostic {
                     rule_id: self.id().to_string(),
-                    message: "Use of `super::` imports is disallowed".to_string(),
+                    message: "Use of wildcard imports (::*) is disallowed".to_string(),
                     file: file.to_path_buf(),
                     line: line_num,
                     severity: Severity::Error,
@@ -177,21 +183,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detects_super_import() {
-        let content = "use super::foo;\n";
-        let rule = DisallowSuperImportsRule {
+    fn test_detects_wildcard_import() {
+        let content = "use foo::*;\n";
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].rule_id, "RC2001");
+        assert_eq!(diags[0].rule_id, "RC2002");
     }
 
     #[test]
-    fn test_detects_pub_super_import() {
-        let content = "pub use super::bar;\n";
-        let rule = DisallowSuperImportsRule {
+    fn test_detects_pub_wildcard_import() {
+        let content = "pub use bar::*;\n";
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: false,
         };
@@ -200,9 +206,20 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_other_imports() {
+    fn test_detects_super_wildcard_import() {
+        let content = "use super::*;\n";
+        let rule = DisallowWildcardImportsRule {
+            enabled: true,
+            allow_in_tests: false,
+        };
+        let diags = rule.check(content, Path::new("test.rs"));
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn test_allows_non_wildcard_imports() {
         let content = "use std::fs;\nuse crate::foo;\n";
-        let rule = DisallowSuperImportsRule {
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: false,
         };
@@ -212,8 +229,8 @@ mod tests {
 
     #[test]
     fn test_disabled_when_severity_none() {
-        let content = "use super::foo;\n";
-        let rule = DisallowSuperImportsRule {
+        let content = "use foo::*;\n";
+        let rule = DisallowWildcardImportsRule {
             enabled: false,
             allow_in_tests: false,
         };
@@ -222,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_super_in_test_module() {
+    fn test_allows_wildcard_in_test_module() {
         let content = r#"
 use std::fs;
 
@@ -236,7 +253,7 @@ mod tests {
     }
 }
 "#;
-        let rule = DisallowSuperImportsRule {
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: true,
         };
@@ -245,34 +262,34 @@ mod tests {
     }
 
     #[test]
-    fn test_disallows_super_outside_test_module() {
+    fn test_disallows_wildcard_outside_test_module() {
         let content = r#"
-use super::foo;
+use super::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 }
 "#;
-        let rule = DisallowSuperImportsRule {
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
-        // Should flag the first super import, not the one in tests
+        // Should flag the first wildcard import, not the one in tests
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].line, 2);
     }
 
     #[test]
-    fn test_allows_super_when_allow_in_tests_disabled() {
+    fn test_allows_wildcard_when_allow_in_tests_disabled() {
         let content = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
 }
 "#;
-        let rule = DisallowSuperImportsRule {
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: false,
         };
@@ -282,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_super_in_test_file() {
+    fn test_allows_wildcard_in_test_file() {
         let content = r#"
 #![cfg(test)]
 
@@ -293,7 +310,7 @@ fn test_something() {
     // test code
 }
 "#;
-        let rule = DisallowSuperImportsRule {
+        let rule = DisallowWildcardImportsRule {
             enabled: true,
             allow_in_tests: true,
         };

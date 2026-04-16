@@ -90,8 +90,27 @@ impl ImportFormattingRule {
             return content.to_string();
         };
 
-        // Extract the raw text of the use region and parse it with syn
-        let region_text: String = lines[region_start..=region_end]
+        // Separate super imports from other imports
+        // Super imports should not be auto-formatted (manual only)
+        let mut super_imports: Vec<(usize, &str)> = Vec::new();
+        let mut other_lines: Vec<&str> = Vec::new();
+        
+        for (idx, line) in lines[region_start..=region_end].iter().enumerate() {
+            let trimmed = line.trim();
+            if is_super_import(trimmed) {
+                super_imports.push((idx, line));
+            } else {
+                other_lines.push(line);
+            }
+        }
+
+        // If all imports are super imports, return unchanged
+        if other_lines.is_empty() {
+            return content.to_string();
+        }
+
+        // Extract the raw text of non-super imports and parse with syn
+        let region_text: String = other_lines
             .iter()
             .map(|l| format!("{l}\n"))
             .collect();
@@ -131,6 +150,17 @@ impl ImportFormattingRule {
         // Lines before the use region
         for line in &lines[..region_start] {
             result.push_str(line);
+            result.push('\n');
+        }
+
+        // Insert super imports at the beginning (preserve original formatting)
+        for (_, line) in &super_imports {
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        // Add blank line if there are super imports and other imports
+        if !super_imports.is_empty() && !formatted.is_empty() {
             result.push('\n');
         }
 
@@ -294,6 +324,12 @@ fn is_use_line(trimmed: &str) -> bool {
     trimmed.starts_with("use ")
         || trimmed.starts_with("pub use ")
         || (trimmed.starts_with("pub(") && trimmed.contains(") use "))
+}
+
+fn is_super_import(trimmed: &str) -> bool {
+    trimmed.starts_with("use super::")
+        || trimmed.starts_with("pub use super::")
+        || (trimmed.starts_with("pub(") && trimmed.contains(") use super::"))
 }
 
 fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {

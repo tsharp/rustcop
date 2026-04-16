@@ -54,3 +54,14 @@ allowed_import_prefixes = ["std", "extern_crate", "crate", "self"]
 #
 # When set to "error", any use of `super::` will produce a diagnostic.
 severity = "error"
+allow_in_tests = true
+
+[lints.disallow_wildcard_imports]
+# Controls the diagnostic severity for using wildcard (`::*`) imports.
+# Supported values:
+# - "none": disables the diagnostic
+# - "suggestion": informational hint
+# - "warning": non-fatal issue
+# - "error": treated as a build/CI failure
+severity = "error"
+allow_in_tests = true

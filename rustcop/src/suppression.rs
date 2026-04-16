@@ -1,3 +1,5 @@
+// rustcop::ignore-file: This file intentionally has a large number of odd suppressions to test the suppression system itself.
+
 /// Represents a suppression directive
 #[derive(Debug, Clone, PartialEq)]
 pub enum Suppression {
@@ -34,10 +36,10 @@ impl SuppressionParser {
         let lines: Vec<&str> = content.lines().collect();
 
         // Check for file-level suppression
-        if let Some(directive_line) = Self::find_file_level_suppression(content) {
+        if let Some((directive_line, justification)) = Self::find_file_level_suppression(content) {
             suppressions.push(Suppression::FileLevel {
                 directive_line,
-                justification: None,
+                justification,
             });
             return Self {
                 suppressions,
@@ -61,34 +63,58 @@ impl SuppressionParser {
         }
     }
 
-    /// Check if file has file-level suppression and return its line number
-    fn find_file_level_suppression(content: &str) -> Option<usize> {
+    /// Check if file has file-level suppression and return its line number + justification
+    fn find_file_level_suppression(content: &str) -> Option<(usize, Option<String>)> {
         let lines: Vec<&str> = content.lines().collect();
 
         for (i, line) in lines.iter().enumerate().take(20) {
-            let trimmed = line.trim();
-
             // Check for comment-based file suppression
-            if trimmed.starts_with("// rustcop:ignore-file")
-                || trimmed.starts_with("//rustcop:ignore-file")
-            {
-                return Some(i + 1); // 1-based line number
+            let after_marker = Self::parse_standalone_comment_marker(line, "rustcop::ignore-file")
+                .or_else(|| Self::parse_standalone_comment_marker(line, "rustcop:ignore-file"));
+            if let Some(after_marker) = after_marker {
+                return Some((
+                    i + 1,
+                    Self::extract_trailing_justification(after_marker),
+                ));
             }
 
+            let trimmed = line.trim();
+
             // Check for attribute-based file suppression
-            if trimmed.contains("#![rustcop::ignore]")
-                || trimmed.contains("#![ rustcop :: ignore ]")
-                || trimmed.contains("#![rustcop::allow]")
+            if trimmed.starts_with("#![rustcop::ignore")
+                || trimmed.starts_with("#![ rustcop :: ignore")
+                || trimmed.starts_with("#![rustcop::allow")
             {
-                return Some(i + 1);
+                return Some((i + 1, None));
             }
         }
 
         None
     }
 
+    /// Parse a comment marker only when it appears in a standalone comment line.
+    /// This avoids matching directives inside string literals.
+    fn parse_standalone_comment_marker<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+        let trimmed = line.trim_start();
+        let after_slashes = trimmed.strip_prefix("//")?;
+        let after_slashes = after_slashes.trim_start();
+        let after_marker = after_slashes.strip_prefix(marker)?;
+        Some(after_marker.trim())
+    }
+
+    /// Extract trailing justification text for directives like:
+    /// `// rustcop::ignore-file: justification`
+    fn extract_trailing_justification(after_marker: &str) -> Option<String> {
+        let text = after_marker.trim_start_matches(':').trim();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.to_string())
+        }
+    }
+
     /// Extract justification from a suppression comment
-    /// Justifications come after a colon: "// rustcop:ignore: Justification here"
+    /// Justifications come after a colon: "// rustcop::ignore: Justification here"
     fn extract_justification(after_marker: &str) -> (Option<Vec<String>>, Option<String>) {
         // Look for colon to separate rules from justification
         if let Some(colon_pos) = after_marker.find(':') {
@@ -96,10 +122,10 @@ impl SuppressionParser {
             let justification = after_marker[colon_pos + 1..].trim().to_string();
 
             if rules_part.is_empty() {
-                // No rules, just justification: "// rustcop:ignore: justification"
+                // No rules, just justification: "// rustcop::ignore: justification"
                 (None, Some(justification))
             } else {
-                // Rules + justification: "// rustcop:ignore RC1001: justification"
+                // Rules + justification: "// rustcop::ignore RC1001: justification"
                 let rules: Vec<String> = rules_part
                     .split(',')
                     .map(|s| s.trim().to_string())
@@ -125,13 +151,12 @@ impl SuppressionParser {
     /// Parse a comment-based suppression on a single line
     /// Returns a vector of suppressions since one comment can suppress multiple rules
     fn parse_comment_suppressions(line: &str, line_num: usize) -> Vec<Suppression> {
-        let trimmed = line.trim();
         let target_line = line_num + 1; // Apply suppression to the NEXT line
         let directive_line = line_num; // This is where the directive itself appears
 
-        // Try both formats: "// rustcop:ignore" and "//rustcop:ignore"
-        let after_marker = trimmed.find("// rustcop:ignore").map(|pos| trimmed[pos + 17..].trim())
-            .or_else(|| trimmed.find("//rustcop:ignore").map(|pos| trimmed[pos + 16..].trim()));
+        // Accept both modern and legacy directive forms.
+        let after_marker = Self::parse_standalone_comment_marker(line, "rustcop::ignore")
+            .or_else(|| Self::parse_standalone_comment_marker(line, "rustcop:ignore"));
 
         if let Some(after_marker) = after_marker {
             let (rules, justification) = Self::extract_justification(after_marker);
@@ -352,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_file_level_suppression_comment() {
-        let content = r#"// rustcop:ignore-file
+        let content = r#"// rustcop::ignore-file
 use std::fs;
 use std::collections::HashMap;
 "#;
@@ -383,7 +408,7 @@ use std::fs;
     #[test]
     fn test_line_level_suppression_all_rules() {
         let content = r#"
-// rustcop:ignore
+// rustcop::ignore
 use std::fs;
 use std::collections::HashMap;
 "#;
@@ -397,9 +422,9 @@ use std::collections::HashMap;
     #[test]
     fn test_line_level_suppression_specific_rules() {
         let content = r#"
-// rustcop:ignore RC1001
+// rustcop::ignore RC1001
 use std::fs;
-// rustcop:ignore RC1001, RC1002
+// rustcop::ignore RC1001, RC1002
 use std::collections::HashMap;
 "#;
 
@@ -415,7 +440,7 @@ use std::collections::HashMap;
     #[test]
     fn test_no_space_variant() {
         let content = r#"
-//rustcop:ignore RC1001
+//rustcop::ignore RC1001
 use std::fs;
 "#;
 
@@ -438,7 +463,7 @@ use std::collections::HashMap;
     #[test]
     fn test_suppression_with_justification() {
         let content = r#"
-// rustcop:ignore RC1001: This is a legacy API
+// rustcop::ignore RC1001: This is a legacy API
 use std::fs;
 "#;
 
@@ -458,7 +483,7 @@ use std::fs;
     #[test]
     fn test_multiple_rules_share_justification() {
         let content = r#"
-// rustcop:ignore RC1001, RC1002: Performance critical section
+// rustcop::ignore RC1001, RC1002: Performance critical section
 use std::fs;
 "#;
 
@@ -483,8 +508,8 @@ use std::fs;
     #[test]
     fn test_stacked_suppressions_different_justifications() {
         let content = r#"
-// rustcop:ignore RC1001: Reason one
-// rustcop:ignore RC1002: Reason two  
+// rustcop::ignore RC1001: Reason one
+// rustcop::ignore RC1002: Reason two  
 use std::fs;
 "#;
 
@@ -520,8 +545,8 @@ use std::fs;
     #[test]
     fn test_get_suppressions_without_justification() {
         let content = r#"
-// rustcop:ignore RC1001: With justification
-// rustcop:ignore RC1002
+// rustcop::ignore RC1001: With justification
+// rustcop::ignore RC1002
 use std::fs;
 "#;
 
@@ -543,9 +568,9 @@ use std::fs;
     #[test]
     fn test_unused_suppression_detection() {
         let content = r#"
-// rustcop:ignore RC1001
+// rustcop::ignore RC1001
 use std::fs;
-// rustcop:ignore RC1002
+// rustcop::ignore RC1002
 use std::collections::HashMap;
 "#;
 
@@ -566,9 +591,9 @@ use std::collections::HashMap;
     #[test]
     fn test_all_suppressions_used() {
         let content = r#"
-// rustcop:ignore RC1001
+// rustcop::ignore RC1001
 use std::fs;
-// rustcop:ignore RC1002
+// rustcop::ignore RC1002
 use std::collections::HashMap;
 "#;
 
@@ -667,5 +692,35 @@ fn my_function() {
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].directive_line, 2); // The attribute is on line 2
         assert!(unused[0].description.contains("RC1001"));
+    }
+
+    #[test]
+    fn test_file_level_suppression_with_justification() {
+        let content = r#"// rustcop::ignore-file: Needed for parser edge-case fixtures
+use std::fs;
+"#;
+
+        let parser = SuppressionParser::parse(content);
+        assert_eq!(parser.suppressions.len(), 1);
+        if let Suppression::FileLevel { justification, .. } = &parser.suppressions[0] {
+            assert_eq!(
+                justification.as_deref(),
+                Some("Needed for parser edge-case fixtures")
+            );
+        } else {
+            panic!("Expected FileLevel suppression");
+        }
+    }
+
+    #[test]
+    fn test_does_not_parse_directive_inside_string_literal() {
+        let content = r#"
+let x = "// rustcop::ignore RC1001";
+use std::fs;
+"#;
+
+        let mut parser = SuppressionParser::parse(content);
+        assert_eq!(parser.suppressions.len(), 0);
+        assert!(!parser.is_suppressed(3, "RC1001").0);
     }
 }
