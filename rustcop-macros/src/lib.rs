@@ -40,7 +40,9 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, punctuated::Punctuated, Expr, ExprLit, Item, Lit, Meta, MetaNameValue, Token,
+    parse_macro_input,
+    punctuated::Punctuated,
+    Expr, ExprLit, Item, Lit, Meta, MetaNameValue, Token,
 };
 
 /// Arguments for the rustcop::ignore attribute

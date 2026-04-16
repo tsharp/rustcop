@@ -3,6 +3,16 @@ use std::{path::PathBuf, process};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
+use config::Config;
+use diagnostic::{Diagnostic, Severity};
+use files::discover_files;
+use output::{write_output, OutputFormat};
+use rules::{
+    imports::ImportFormattingRule, modules::ModulesRule, super_imports::DisallowSuperImportsRule,
+    wildcard_imports::DisallowWildcardImportsRule, Rule,
+};
+use suppression::SuppressionParser;
+
 pub mod config;
 pub mod diagnostic;
 pub mod files;
@@ -13,16 +23,6 @@ pub mod suppression;
 // Re-export the procedural macros for users
 // rustcop::ignore RC2002: This is expected to be a wildcard export.
 pub use rustcop_macros::*;
-
-use config::Config;
-use diagnostic::{Diagnostic, Severity};
-use files::discover_files;
-use output::{write_output, OutputFormat};
-use rules::imports::ImportFormattingRule;
-use rules::super_imports::DisallowSuperImportsRule;
-use rules::wildcard_imports::DisallowWildcardImportsRule;
-use rules::Rule;
-use suppression::SuppressionParser;
 
 #[derive(Parser)]
 #[command(
@@ -111,6 +111,7 @@ where
     // Import formatting rule is enabled by default
     let rules: Vec<Box<dyn Rule>> = vec![
         Box::new(ImportFormattingRule::from_config(&config)),
+        Box::new(ModulesRule::from_config(&config)),
         Box::new(DisallowSuperImportsRule::from_config(&config)),
         Box::new(DisallowWildcardImportsRule::from_config(&config)),
     ];

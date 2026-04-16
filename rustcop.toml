@@ -14,7 +14,14 @@ require_suppression_justification = true
 [modules]
 severity = "error"
 preferred_module_order = ["local", "crate", "super", "in_crate"]
-allowed_lib_pub
+allowed_lib_exports = [
+    "config",
+    "diagnostic",
+    "files",
+    "output",
+    "rules",
+    "suppression"
+]
 
 [imports]
 # Controls whether compatible `use` statements should be grouped together.

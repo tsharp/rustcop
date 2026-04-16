@@ -349,6 +349,30 @@ impl Default for ImportsConfig {
     }
 }
 
+/// Configuration for the modules section
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ModulesConfig {
+    pub severity: String,
+    pub preferred_module_order: Vec<String>,
+    pub allowed_lib_exports: Vec<String>,
+}
+
+impl Default for ModulesConfig {
+    fn default() -> Self {
+        ModulesConfig {
+            severity: "none".to_string(),
+            preferred_module_order: vec![
+                "local".to_string(),
+                "crate".to_string(),
+                "super".to_string(),
+                "in_crate".to_string(),
+            ],
+            allowed_lib_exports: Vec::new(),
+        }
+    }
+}
+
 /// Configuration for a lint rule
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use syn::UseTree;
 
@@ -94,7 +94,9 @@ impl ImportFormattingRule {
             return content.to_string();
         };
 
-        let parsed = match parse_use_items(&lines[region_start..=region_end]) {
+        let local_modules = collect_local_module_names(&lines);
+
+        let parsed = match parse_use_items(&lines[region_start..=region_end], &local_modules) {
             Some(imports) if !imports.is_empty() => imports,
             _ => return content.to_string(),
         };
@@ -200,7 +202,10 @@ impl Rule for ImportFormattingRule {
 // ---------------------------------------------------------------------------
 
 /// Parse use statements from region lines while retaining leading trivia.
-fn parse_use_items(region_lines: &[&str]) -> Option<Vec<NormalizedUse>> {
+fn parse_use_items(
+    region_lines: &[&str],
+    local_modules: &HashSet<String>,
+) -> Option<Vec<NormalizedUse>> {
     let blocks = parse_import_blocks(region_lines);
     let mut result = Vec::new();
 
@@ -208,7 +213,7 @@ fn parse_use_items(region_lines: &[&str]) -> Option<Vec<NormalizedUse>> {
         let item_use: syn::ItemUse = syn::parse_str(&block.use_text).ok()?;
         let vis = format_visibility(&item_use.vis);
         let tree = use_tree_to_node(&item_use.tree);
-        let group = classify_node(&tree);
+        let group = classify_node(&tree, local_modules);
 
         let has_tag = block.leading_lines.iter().any(|line| {
             let trimmed = line.trim();
@@ -355,15 +360,37 @@ fn format_visibility(vis: &syn::Visibility) -> String {
     }
 }
 
+fn collect_local_module_names(lines: &[&str]) -> HashSet<String> {
+    let mut modules = HashSet::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if !trimmed.ends_with(';') {
+            continue;
+        }
+
+        let Ok(item_mod) = syn::parse_str::<syn::ItemMod>(trimmed) else {
+            continue;
+        };
+
+        if item_mod.content.is_none() {
+            modules.insert(item_mod.ident.to_string());
+        }
+    }
+
+    modules
+}
+
 // ---------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------
 
-fn classify_node(node: &UseNode) -> ImportGroup {
+fn classify_node(node: &UseNode, local_modules: &HashSet<String>) -> ImportGroup {
     let root = root_ident(node);
     match root.as_str() {
         "std" | "core" | "alloc" => ImportGroup::Std,
         "crate" | "self" | "super" => ImportGroup::Internal,
+        _ if local_modules.contains(root.as_str()) => ImportGroup::Internal,
         _ => ImportGroup::External,
     }
 }
@@ -999,6 +1026,34 @@ use std::fmt;
 // keep this with serde import
 use serde::Serialize;
 "#;
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_local_module_imports_are_internal() {
+        let input = concat!(
+            "pub mod config;\n",
+            "pub mod diagnostic;\n",
+            "\n",
+            "use config::Config;\n",
+            "use clap::Parser;\n",
+            "use std::path::PathBuf;\n",
+            "use diagnostic::Severity;\n",
+        );
+
+        let expected = concat!(
+            "pub mod config;\n",
+            "pub mod diagnostic;\n",
+            "use std::path::PathBuf;\n",
+            "\n",
+            "use clap::Parser;\n",
+            "\n",
+            "use config::Config;\n",
+            "use diagnostic::Severity;\n",
+        );
 
         let rule = ImportFormattingRule::new(true, true, true);
         let result = rule.format_imports(input);

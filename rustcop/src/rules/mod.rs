@@ -1,4 +1,5 @@
 pub mod imports;
+pub mod modules;
 pub mod super_imports;
 pub mod wildcard_imports;
 use std::path::Path;
