@@ -23,5 +23,5 @@ pub fn discover_files(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn is_rust_file(path: &Path) -> bool {
-    path.extension().map_or(false, |e| e == "rs")
+    path.extension().is_some_and(|e| e == "rs")
 }

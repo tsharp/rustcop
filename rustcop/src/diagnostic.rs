@@ -13,4 +13,6 @@ pub struct Diagnostic {
     pub file: PathBuf,
     pub line: usize,
     pub severity: Severity,
+    pub suppressed: bool,
+    pub suppression_justification: Option<String>,
 }

@@ -11,4 +11,4 @@ fix:
 
 publish:
 	cargo publish -p rustcop
-	cargo publish -p cargo-rustcop
+	cargo publish -p rustcop-macros

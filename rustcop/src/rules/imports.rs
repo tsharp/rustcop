@@ -69,10 +69,15 @@ impl ImportFormattingRule {
     }
 
     pub fn from_config(config: &Config) -> Self {
+        use crate::config::ImportsConfig;
+        let imports = config
+            .get_config::<ImportsConfig>("imports")
+            .unwrap_or_default();
+
         Self {
-            group: config.imports.group,
-            sort: config.imports.sort,
-            merge: config.imports.merge,
+            group: imports.group_imports,
+            sort: imports.group_imports, // Using group_imports for now
+            merge: imports.import_merge_behaviour == "always",
         }
     }
 
@@ -177,6 +182,8 @@ impl Rule for ImportFormattingRule {
                 file: file.to_path_buf(),
                 line: 1,
                 severity: Severity::Warning,
+                suppressed: false,
+                suppression_justification: None,
             }]
         } else {
             vec![]
@@ -407,7 +414,7 @@ fn node_sort_suffix(node: &UseNode) -> String {
         UseNode::Slf { .. } => "self".to_string(),
         UseNode::Glob => "*".to_string(),
         UseNode::Group { items } => {
-            let inner: Vec<String> = items.iter().map(|i| node_sort_suffix(i)).collect();
+            let inner: Vec<String> = items.iter().map(node_sort_suffix).collect();
             format!("{{{}}}", inner.join(", "))
         }
     }

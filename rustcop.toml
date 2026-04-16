@@ -1,8 +1,56 @@
-# RustCop configuration
-# Rule categories can be toggled individually.
+# Schema version for the RustCop configuration file.
+# Used to manage breaking changes and migrations in future versions.
+version = 1
+root = true
+
+# When true, warnings are treated as errors and cause non-zero exit codes.
+# Default: false
+treat_warnings_as_errors = false
+
+# When true, suppression directives must include justification comments.
+# Default: true
+require_suppression_justification = true
 
 [imports]
-enabled = true
-group = true      # RC1001: Group imports into std → external → crate/self/super
-sort = true       # RC1001: Sort imports alphabetically within each group
-merge = true      # RC1001: Merge imports from the same crate into one `use` block
+# Controls whether compatible `use` statements should be grouped together.
+# When true, the formatter may combine and organize imports into logical blocks.
+group_imports = true
+
+# Defines the preferred ordering of top-level import prefixes.
+# Imports are sorted according to this sequence when grouping or reordering is enabled.
+# Supported values:
+# - "std": standard library
+# - "extern_crate": external dependencies
+# - "crate": current crate root
+# - "self": current module
+# - "super": parent module
+preferred_import_order = ["std", "extern_crate", "crate", "self", "super"]
+
+# Controls how granular imports should be when merging.
+# "crate" merges imports at the crate level where possible.
+# Example:
+#   use foo::bar;
+#   use foo::baz;
+# becomes:
+#   use foo::{bar, baz};
+import_granularity = "crate"
+
+# Controls whether compatible imports should be merged.
+# "always" merges imports whenever it is valid and consistent with the configured granularity.
+import_merge_behaviour = "always"
+
+# Defines which import path prefixes are permitted by the formatter.
+# Imports using prefixes not listed here may be rewritten or flagged depending on lint settings.
+# In this example, `super` is excluded, so parent-module imports are not allowed.
+allowed_import_prefixes = ["std", "extern_crate", "crate", "self"]
+
+[lints.disallow_super_imports]
+# Controls the diagnostic severity for using `super::` imports.
+# Supported values:
+# - "none": disables the diagnostic
+# - "suggestion": informational hint
+# - "warning": non-fatal issue
+# - "error": treated as a build/CI failure
+#
+# When set to "error", any use of `super::` will produce a diagnostic.
+severity = "error"
