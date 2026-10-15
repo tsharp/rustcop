@@ -8,8 +8,11 @@ use diagnostic::{Diagnostic, Severity};
 use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::{
-    exports::ExportsRule, imports::ImportFormattingRule, modules::ModulesRule,
-    super_imports::DisallowSuperImportsRule, wildcard_imports::DisallowWildcardImportsRule, Rule,
+    exports::ExportsRule, imports::ImportFormattingRule, item_comments::RequireItemCommentsRule,
+    method_comments::RequireMethodCommentsRule, modules::ModulesRule,
+    public_fields::DisallowPublicFieldsRule, super_imports::DisallowSuperImportsRule,
+    trait_impl_comments::RequireTraitImplCommentsRule,
+    wildcard_imports::DisallowWildcardImportsRule, Rule,
 };
 use suppression::SuppressionParser;
 
@@ -115,6 +118,10 @@ where
         Box::new(ExportsRule::from_config(&config)),
         Box::new(DisallowSuperImportsRule::from_config(&config)),
         Box::new(DisallowWildcardImportsRule::from_config(&config)),
+        Box::new(DisallowPublicFieldsRule::from_config(&config)),
+        Box::new(RequireMethodCommentsRule::from_config(&config)),
+        Box::new(RequireItemCommentsRule::from_config(&config)),
+        Box::new(RequireTraitImplCommentsRule::from_config(&config)),
     ];
 
     if rules.is_empty() {

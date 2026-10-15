@@ -23,7 +23,7 @@ name = "sarif_suppression_example"
 path = "../examples/sarif_suppression_example.rs"
 
 [dependencies]
-rustcop-macros = { path = "../rustcop-macros", version = "0.1.5" }
+rustcop-macros = { path = "../rustcop-macros", version = "0.1.6" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +32,6 @@ walkdir.workspace = true
 colored.workspace = true
 globset.workspace = true
 serde-sarif.workspace = true
-syn = { version = "2.0.117", features = ["full", "parsing", "printing"] }
+syn = { version = "2.0.117", features = ["full", "parsing", "printing", "visit"] }
 quote = "1.0.45"
-proc-macro2 = "1.0.106"
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }

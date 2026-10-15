@@ -27,6 +27,7 @@ pub enum Suppression {
 pub struct SuppressionParser {
     suppressions: Vec<Suppression>,
     used: std::collections::HashSet<usize>,
+    public_field_scopes: Vec<(usize, usize, usize)>,
 }
 
 impl SuppressionParser {
@@ -44,6 +45,7 @@ impl SuppressionParser {
             return Self {
                 suppressions,
                 used: std::collections::HashSet::new(),
+                public_field_scopes: Vec::new(),
             };
         }
 
@@ -60,7 +62,45 @@ impl SuppressionParser {
         Self {
             suppressions,
             used: std::collections::HashSet::new(),
+            public_field_scopes: Self::public_field_scopes(content),
         }
+    }
+
+    // RC2003 is reported at each field. A directive targeting the struct header
+    // applies to its fields too, while other rules keep their line semantics.
+    fn public_field_scopes(content: &str) -> Vec<(usize, usize, usize)> {
+        use syn::{spanned::Spanned, visit::Visit};
+
+        #[derive(Default)]
+        struct StructScopes(Vec<(usize, usize, usize)>);
+
+        impl<'ast> Visit<'ast> for StructScopes {
+            fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+                self.0.push((
+                    item.span().start().line,
+                    item.struct_token.span.start().line,
+                    item.span().end().line,
+                ));
+                syn::visit::visit_item_struct(self, item);
+            }
+        }
+
+        let mut visitor = StructScopes::default();
+        if let Ok(ast) = syn::parse_file(content) {
+            visitor.visit_file(&ast);
+        }
+        visitor.0
+    }
+
+    fn matches_line(&self, target: usize, line: usize, rule_id: &str) -> bool {
+        target == line
+            || (rule_id == "RC2003"
+                && self
+                    .public_field_scopes
+                    .iter()
+                    .any(|&(start, header, end)| {
+                        target >= start && target <= header && line >= header && line <= end
+                    }))
     }
 
     /// Check if file has file-level suppression and return its line number + justification
@@ -297,7 +337,7 @@ impl SuppressionParser {
                     line: sup_line,
                     justification,
                     ..
-                } if *sup_line == line => {
+                } if self.matches_line(*sup_line, line, rule_id) => {
                     self.used.insert(idx);
                     return (true, justification.clone());
                 }
@@ -306,7 +346,7 @@ impl SuppressionParser {
                     rule,
                     justification,
                     ..
-                } if *sup_line == line && rule == rule_id => {
+                } if self.matches_line(*sup_line, line, rule_id) && rule == rule_id => {
                     self.used.insert(idx);
                     return (true, justification.clone());
                 }
