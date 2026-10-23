@@ -134,6 +134,7 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 | ID | Name | Description |
 |----|------|-------------|
 | RC1001 | ImportFormatting | Groups, sorts, and merges `use` statements |
+| RC1002 | CommentBlockSpacing | Separates adjacent different comment block types with one blank line |
 | RC2001 | DisallowSuperImports | Reports use of `super::` imports when configured |
 | RC2003 | DisallowPublicFields | Reports unrestricted `pub` struct fields when configured |
 | RC3001 | RequireMethodComments | Requires documentation on all impl and trait methods when configured |
@@ -144,6 +145,7 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 
 Import formatting follows `rustfmt` conventions:
 - **Grouping** — standard library first, then third-party crates, then internal (`crate`/`self`/`super`), separated by blank lines.
+- **Visibility** — imports and module declarations with different visibility are separated by a blank line.
 - **Sorting** — alphabetical within each group.
 - **Merging** — multiple imports from the same crate are combined into a single `use` block.
 - **Multi-line expansion** — imports with nested braces are expanded to one item per line.

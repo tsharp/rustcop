@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::{
     config::{Config, ModulesConfig},
     diagnostic::{Diagnostic, Severity},
-    rules::Rule,
+    rules::{compare_visibilities, format_visibility, Rule},
 };
 
 pub struct ModulesRule {
@@ -87,29 +87,18 @@ impl Rule for ModulesRule {
             return content.to_string();
         }
 
-        let original_order: Vec<(PreludeKind, String, String)> = blocks
-            .iter()
-            .map(|b| (b.kind, b.sort_group.clone(), b.sort_name.clone()))
-            .collect();
-
         blocks.sort_by(|a, b| {
             a.kind.cmp(&b.kind).then_with(|| match a.kind {
-                PreludeKind::Use => a.original_index.cmp(&b.original_index),
+                PreludeKind::Use => compare_visibilities(&a.visibility, &b.visibility)
+                    .then_with(|| a.original_index.cmp(&b.original_index)),
                 PreludeKind::Mod => a
                     .sort_group
                     .cmp(&b.sort_group)
+                    .then_with(|| compare_visibilities(&a.visibility, &b.visibility))
                     .then_with(|| a.sort_name.cmp(&b.sort_name)),
                 PreludeKind::PubUse => a.sort_name.cmp(&b.sort_name),
             })
         });
-
-        let sorted_order: Vec<(PreludeKind, String, String)> = blocks
-            .iter()
-            .map(|b| (b.kind, b.sort_group.clone(), b.sort_name.clone()))
-            .collect();
-        if sorted_order == original_order {
-            return content.to_string();
-        }
 
         let mut result = String::new();
         for line in &lines[..region_start] {
@@ -118,15 +107,18 @@ impl Rule for ModulesRule {
         }
 
         let mut prev_kind: Option<PreludeKind> = None;
+        let mut prev_visibility: Option<&str> = None;
         for block in &blocks {
-            if let Some(prev) = prev_kind {
-                if prev != block.kind {
-                    result.push('\n');
-                }
+            let kind_changed = prev_kind.is_some_and(|prev| prev != block.kind);
+            let visibility_changed =
+                prev_visibility.is_some_and(|prev| prev != block.visibility.as_str());
+            if kind_changed || visibility_changed {
+                result.push('\n');
             }
             result.push_str(&block.original_block);
             result.push('\n');
             prev_kind = Some(block.kind);
+            prev_visibility = Some(&block.visibility);
         }
 
         let mut after_idx = region_end + 1;
@@ -155,6 +147,7 @@ impl Rule for ModulesRule {
 #[derive(Debug, Clone)]
 struct ModuleBlock {
     kind: PreludeKind,
+    visibility: String,
     sort_group: String,
     sort_name: String,
     original_index: usize,
@@ -296,22 +289,35 @@ fn parse_prelude_blocks(
                 let category = module_category(&item_mod.vis, preferred_module_order);
                 blocks.push(ModuleBlock {
                     kind: PreludeKind::Mod,
+                    visibility: format_visibility(&item_mod.vis),
                     sort_group: category,
                     sort_name: item_mod.ident.to_string(),
                     original_index: block_index,
                     original_block: block_lines.join("\n"),
                 });
             } else if is_pub_use_line(trimmed) {
+                let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt_lines.join("\n")) else {
+                    pending_leading.clear();
+                    i = end + 1;
+                    continue;
+                };
                 blocks.push(ModuleBlock {
                     kind: PreludeKind::PubUse,
+                    visibility: format_visibility(&item_use.vis),
                     sort_group: String::new(),
                     sort_name: stmt_lines.join("\n"),
                     original_index: block_index,
                     original_block: block_lines.join("\n"),
                 });
             } else {
+                let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt_lines.join("\n")) else {
+                    pending_leading.clear();
+                    i = end + 1;
+                    continue;
+                };
                 blocks.push(ModuleBlock {
                     kind: PreludeKind::Use,
+                    visibility: format_visibility(&item_use.vis),
                     sort_group: String::new(),
                     sort_name: stmt_lines.join("\n"),
                     original_index: block_index,
@@ -474,5 +480,54 @@ mod tests {
             "pub use zed::Thing;\n",
         );
         assert_eq!(fixed, expected);
+    }
+
+    #[test]
+    fn test_spacing_only_violation_between_module_and_reexport_is_fixed() {
+        let input = concat!(
+            "mod helio_openssl;\n",
+            "pub use helio_openssl::{cipher_suite_mapping, microsoft_interface};\n",
+        );
+        let expected = concat!(
+            "mod helio_openssl;\n",
+            "\n",
+            "pub use helio_openssl::{cipher_suite_mapping, microsoft_interface};\n",
+        );
+
+        let rule = ModulesRule {
+            enabled: true,
+            severity: Severity::Error,
+            preferred_module_order: vec!["local".to_string(), "crate".to_string()],
+        };
+
+        let fixed = rule.fix(input);
+        assert_eq!(fixed, expected);
+        assert_eq!(rule.fix(&fixed), fixed);
+    }
+
+    #[test]
+    fn test_module_visibilities_are_separate_sections() {
+        let input = concat!(
+            "pub mod public;\n",
+            "mod private;\n",
+            "pub(self) mod self_visible;\n",
+        );
+        let expected = concat!(
+            "mod private;\n",
+            "\n",
+            "pub(self) mod self_visible;\n",
+            "\n",
+            "pub mod public;\n",
+        );
+
+        let rule = ModulesRule {
+            enabled: true,
+            severity: Severity::Error,
+            preferred_module_order: vec!["local".to_string(), "crate".to_string()],
+        };
+
+        let fixed = rule.fix(input);
+        assert_eq!(fixed, expected);
+        assert_eq!(rule.fix(&fixed), fixed);
     }
 }

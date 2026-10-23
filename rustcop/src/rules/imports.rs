@@ -5,7 +5,7 @@ use syn::UseTree;
 use crate::{
     config::Config,
     diagnostic::{Diagnostic, Severity},
-    rules::Rule,
+    rules::{compare_visibilities, format_visibility, Rule},
 };
 
 // ---------------------------------------------------------------------------
@@ -116,13 +116,15 @@ impl ImportFormattingRule {
                 sort_use_node(&mut imp.tree);
             }
             imports.sort_by(|a, b| {
-                if self.group {
-                    a.group
-                        .cmp(&b.group)
-                        .then_with(|| cmp_use_nodes(&a.tree, &b.tree))
-                } else {
-                    cmp_use_nodes(&a.tree, &b.tree)
-                }
+                compare_visibilities(&a.visibility, &b.visibility).then_with(|| {
+                    if self.group {
+                        a.group
+                            .cmp(&b.group)
+                            .then_with(|| cmp_use_nodes(&a.tree, &b.tree))
+                    } else {
+                        cmp_use_nodes(&a.tree, &b.tree)
+                    }
+                })
             });
         }
 
@@ -353,9 +355,13 @@ fn use_tree_to_node(tree: &UseTree) -> UseNode {
             ident: p.ident.to_string(),
             child: Box::new(use_tree_to_node(&p.tree)),
         },
+        UseTree::Name(n) if n.ident == "self" => UseNode::Slf { rename: None },
         UseTree::Name(n) => UseNode::Name {
             ident: n.ident.to_string(),
             rename: None,
+        },
+        UseTree::Rename(r) if r.ident == "self" => UseNode::Slf {
+            rename: Some(r.rename.to_string()),
         },
         UseTree::Rename(r) => UseNode::Name {
             ident: r.ident.to_string(),
@@ -365,27 +371,6 @@ fn use_tree_to_node(tree: &UseTree) -> UseNode {
         UseTree::Group(g) => UseNode::Group {
             items: g.items.iter().map(use_tree_to_node).collect(),
         },
-    }
-}
-
-fn format_visibility(vis: &syn::Visibility) -> String {
-    match vis {
-        syn::Visibility::Public(_) => "pub".to_string(),
-        syn::Visibility::Restricted(r) => {
-            let path = r
-                .path
-                .segments
-                .iter()
-                .map(|s| s.ident.to_string())
-                .collect::<Vec<_>>()
-                .join("::");
-            if r.in_token.is_some() {
-                format!("pub(in {path})")
-            } else {
-                format!("pub({path})")
-            }
-        }
-        syn::Visibility::Inherited => String::new(),
     }
 }
 
@@ -713,16 +698,17 @@ fn collect_children_for_merge(node: &UseNode, out: &mut Vec<UseNode>) {
 fn format_all_imports(imports: &[NormalizedUse], group: bool) -> String {
     let mut result = String::new();
     let mut prev_group: Option<ImportGroup> = None;
+    let mut prev_visibility: Option<&str> = None;
 
     for imp in imports {
-        if group {
-            if let Some(prev) = prev_group {
-                if prev != imp.group {
-                    result.push('\n');
-                }
-            }
+        let visibility_changed =
+            prev_visibility.is_some_and(|prev| prev != imp.visibility.as_str());
+        let import_group_changed = group && prev_group.is_some_and(|prev| prev != imp.group);
+        if visibility_changed || import_group_changed {
+            result.push('\n');
         }
         prev_group = Some(imp.group);
+        prev_visibility = Some(&imp.visibility);
 
         if imp.skip_format {
             result.push_str(&imp.original_block);
@@ -1009,6 +995,28 @@ use documentdb_gateway_core::{
     }
 
     #[test]
+    fn test_self_is_first_within_nested_group() {
+        let input =
+            "use crate::auth::{scram::ScramAuthenticationHandler, self, AuthenticationManager};\n";
+        let expected =
+            "use crate::auth::{self, scram::ScramAuthenticationHandler, AuthenticationManager};\n";
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_renamed_self_is_first_within_group() {
+        let input = "use crate::auth::{scram::Handler, self as auth, AuthenticationManager};\n";
+        let expected = "use crate::auth::{self as auth, scram::Handler, AuthenticationManager};\n";
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_grouping() {
         let input = "use crate::foo;\nuse std::io;\nuse serde::Serialize;\n";
         let expected = "use std::io;\n\nuse serde::Serialize;\n\nuse crate::foo;\n";
@@ -1032,6 +1040,56 @@ use documentdb_gateway_core::{
         let rule = ImportFormattingRule::new(true, true, true);
         let result = rule.format_imports(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_distinct_visibilities_are_separate_sections() {
+        let input = concat!(
+            "pub use public::Item;\n",
+            "pub(in crate::parent) use parent::Item;\n",
+            "pub(crate) use package::Item;\n",
+            "pub(super) use ancestor::Item;\n",
+            "pub(self) use current::Item;\n",
+            "use private::Item;\n",
+        );
+        let expected = concat!(
+            "use private::Item;\n",
+            "\n",
+            "pub(self) use current::Item;\n",
+            "\n",
+            "pub(super) use ancestor::Item;\n",
+            "\n",
+            "pub(crate) use package::Item;\n",
+            "\n",
+            "pub(in crate::parent) use parent::Item;\n",
+            "\n",
+            "pub use public::Item;\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+        assert_eq!(rule.format_imports(&result), result);
+    }
+
+    #[test]
+    fn test_visibility_separator_precedes_attached_attribute() {
+        let input = concat!(
+            "#[cfg(feature = \"public-api\")]\n",
+            "pub(crate) use api::Item;\n",
+            "use private::Item;\n",
+        );
+        let expected = concat!(
+            "use private::Item;\n",
+            "\n",
+            "#[cfg(feature = \"public-api\")]\n",
+            "pub(crate) use api::Item;\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+        assert_eq!(rule.format_imports(&result), result);
     }
 
     #[test]
