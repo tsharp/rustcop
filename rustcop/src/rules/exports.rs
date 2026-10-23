@@ -1,4 +1,7 @@
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 
 use crate::{
     config::{Config, ExportsConfig},
@@ -10,6 +13,12 @@ pub struct ExportsRule {
     enabled: bool,
     severity: Severity,
     allowed_lib_exports: HashSet<String>,
+}
+
+pub(crate) struct DetectedExport {
+    pub name: String,
+    pub line: usize,
+    pub reexported: bool,
 }
 
 impl ExportsRule {
@@ -51,7 +60,16 @@ impl Rule for ExportsRule {
         }
 
         if self.allowed_lib_exports.is_empty() {
-            return vec![];
+            return vec![Diagnostic {
+                rule_id: self.id().to_string(),
+                message: "exports.allowed_lib_exports must not be empty; run `rustcop fix --update-export-allowlist` to add detected exports"
+                    .to_string(),
+                file: file.to_path_buf(),
+                line: 1,
+                severity: self.severity.clone(),
+                suppressed: false,
+                suppression_justification: None,
+            }];
         }
 
         let mut invalid_entries: Vec<&str> = self
@@ -76,8 +94,8 @@ impl Rule for ExportsRule {
             }];
         }
 
-        let crate_name = match crate_name_for_file(file) {
-            Ok(crate_name) => crate_name,
+        let exports = match detect_exports(content, file) {
+            Ok(exports) => exports,
             Err(error) => {
                 return vec![Diagnostic {
                     rule_id: self.id().to_string(),
@@ -91,7 +109,7 @@ impl Rule for ExportsRule {
             }
         };
 
-        self.check_exports(content, file, &crate_name)
+        self.check_detected_exports(file, exports)
     }
 
     fn fix(&self, content: &str) -> String {
@@ -100,71 +118,90 @@ impl Rule for ExportsRule {
 }
 
 impl ExportsRule {
+    #[cfg(test)]
     fn check_exports(&self, content: &str, file: &Path, crate_name: &str) -> Vec<Diagnostic> {
-        let lines: Vec<&str> = content.lines().collect();
+        self.check_detected_exports(file, detect_exports_for_crate(content, crate_name))
+    }
+
+    fn check_detected_exports(&self, file: &Path, exports: Vec<DetectedExport>) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        let mut i = 0usize;
-
-        while i < lines.len() {
-            let trimmed = lines[i].trim();
-
-            if trimmed.starts_with("pub mod ") {
-                if let Ok(item_mod) = syn::parse_str::<syn::ItemMod>(trimmed) {
-                    let name = item_mod.ident.to_string();
-                    let qualified_name = format!("{crate_name}::{name}");
-                    if !self.allowed_lib_exports.contains(&qualified_name) {
-                        diagnostics.push(Diagnostic {
-                            rule_id: self.id().to_string(),
-                            message: format!(
-                                "Module `{qualified_name}` is exported from lib.rs but is not in exports.allowed_lib_exports"
-                            ),
-                            file: file.to_path_buf(),
-                            line: i + 1,
-                            severity: self.severity.clone(),
-                            suppressed: false,
-                            suppression_justification: None,
-                        });
-                    }
-                }
-                i += 1;
-                continue;
+        for export in exports {
+            if !self.allowed_lib_exports.contains(&export.name) {
+                let action = if export.reexported {
+                    "re-exported"
+                } else {
+                    "exported"
+                };
+                diagnostics.push(Diagnostic {
+                    rule_id: self.id().to_string(),
+                    message: format!(
+                        "Module `{}` is {action} from lib.rs but is not in exports.allowed_lib_exports",
+                        export.name
+                    ),
+                    file: file.to_path_buf(),
+                    line: export.line,
+                    severity: self.severity.clone(),
+                    suppressed: false,
+                    suppression_justification: None,
+                });
             }
-
-            if trimmed.starts_with("pub use ") {
-                let end = consume_stmt_end(&lines, i);
-                let stmt = lines[i..=end].join("\n");
-
-                if let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt) {
-                    let mut modules = Vec::new();
-                    collect_reexported_modules(&item_use.tree, &mut modules);
-
-                    for module in modules {
-                        let qualified_name = format!("{crate_name}::{module}");
-                        if !self.allowed_lib_exports.contains(&qualified_name) {
-                            diagnostics.push(Diagnostic {
-                                rule_id: self.id().to_string(),
-                                message: format!(
-                                    "Module `{qualified_name}` is re-exported from lib.rs but is not in exports.allowed_lib_exports"
-                                ),
-                                file: file.to_path_buf(),
-                                line: i + 1,
-                                severity: self.severity.clone(),
-                                suppressed: false,
-                                suppression_justification: None,
-                            });
-                        }
-                    }
-                }
-
-                i = end + 1;
-                continue;
-            }
-
-            i += 1;
         }
-
         diagnostics
     }
+}
+
+pub(crate) fn detect_exports(content: &str, file: &Path) -> Result<Vec<DetectedExport>, String> {
+    let crate_name = crate_name_for_file(file)?;
+    Ok(detect_exports_for_crate(content, &crate_name))
+}
+
+fn detect_exports_for_crate(content: &str, crate_name: &str) -> Vec<DetectedExport> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut exports: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        if trimmed.starts_with("pub mod ") {
+            if let Ok(item_mod) = syn::parse_str::<syn::ItemMod>(trimmed) {
+                exports
+                    .entry(format!("{crate_name}::{}", item_mod.ident))
+                    .or_insert((i + 1, false));
+            }
+            i += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("pub use ") {
+            let end = consume_stmt_end(&lines, i);
+            let stmt = lines[i..=end].join("\n");
+
+            if let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt) {
+                let mut modules = Vec::new();
+                collect_reexported_modules(&item_use.tree, &mut modules);
+                for module in modules {
+                    exports
+                        .entry(format!("{crate_name}::{module}"))
+                        .or_insert((i + 1, true));
+                }
+            }
+
+            i = end + 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    exports
+        .into_iter()
+        .map(|(name, (line, reexported))| DetectedExport {
+            name,
+            line,
+            reexported,
+        })
+        .collect()
 }
 
 fn is_qualified_export(entry: &str) -> bool {
@@ -298,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_allowlist_is_unconstrained() {
+    fn test_empty_allowlist_is_an_error() {
         let content = concat!("pub mod secret;\n", "pub use secret::Hidden;\n",);
 
         let rule = ExportsRule {
@@ -308,7 +345,8 @@ mod tests {
         };
 
         let diags = rule.check(content, Path::new("lib.rs"));
-        assert!(diags.is_empty());
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("--update-export-allowlist"));
     }
 
     #[test]
@@ -357,5 +395,31 @@ mod tests {
             crate_name_for_file(Path::new("rustcop/src/lib.rs")).unwrap(),
             "rustcop"
         );
+    }
+
+    #[test]
+    fn test_detects_modules_and_reexport_source_roots() {
+        let content = concat!(
+            "pub mod config;\n",
+            "pub use runtime::benchmarks as runtime_benchmarks;\n",
+            "pub use crate::{config, telemetry::Telemetry};\n",
+            "pub use macros::*;\n",
+        );
+
+        let exports = detect_exports_for_crate(content, "gateway");
+        let names: Vec<&str> = exports.iter().map(|export| export.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "gateway::config",
+                "gateway::macros",
+                "gateway::runtime",
+                "gateway::telemetry",
+            ]
+        );
+        assert!(exports
+            .iter()
+            .find(|export| export.name == "gateway::runtime")
+            .is_some_and(|export| export.reexported));
     }
 }

@@ -3,7 +3,7 @@ resolver = "2"
 members = [ 'rustcop', 'rustcop-macros' ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Rust style linter and formatter inspired by C#'s StyleCop"
@@ -21,6 +21,7 @@ walkdir = "2"
 colored = "2"
 globset = "0.4"
 serde-sarif = "0.7"
+toml_edit = "0.22"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

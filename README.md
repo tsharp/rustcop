@@ -28,6 +28,16 @@ cargo rustcop fix [paths...]
 
 Fixes violations in-place and runs a verification pass to confirm everything is clean.
 
+To add every detected library module export and re-export to the configured
+allowlist:
+
+```sh
+cargo rustcop fix --update-export-allowlist [paths...]
+```
+
+This updates the file selected by `--config` (default: `rustcop.toml`), merges
+new entries with the existing allowlist, and then continues with normal fixes.
+
 If no paths are given, both commands default to the current directory.
 
 ### Options
@@ -35,6 +45,7 @@ If no paths are given, both commands default to the current directory.
 | Flag | Description |
 |------|-------------|
 | `-c`, `--config <FILE>` | Path to the config file (default: `rustcop.toml`) |
+| `--update-export-allowlist` | With `fix`, add detected `pub mod` and `pub use` roots to `exports.allowed_lib_exports` |
 
 ## Configuration
 
@@ -82,6 +93,14 @@ by the exported root module or re-export, allowing one shared configuration to
 target multiple workspace crates. An explicit
 `[lints.missing_suppression_justification]` severity overrides the legacy
 `require_suppression_justification` switch.
+
+When `[exports]` is enabled, `allowed_lib_exports` must contain at least one
+entry. RustCop detects both `pub mod` declarations and `pub use` re-exports.
+Re-exports are represented by their source root: for example,
+`pub use runtime::benchmarks as runtime_benchmarks` requires
+`"my_crate::runtime"`. Run
+`cargo rustcop fix --update-export-allowlist` to merge all currently detected
+entries into the configured list.
 
 Every diagnostic rule has an independent severity setting:
 

@@ -19,6 +19,7 @@ use suppression::SuppressionParser;
 
 pub mod config;
 pub mod diagnostic;
+mod export_allowlist;
 pub mod files;
 pub mod output;
 pub mod rules;
@@ -60,6 +61,10 @@ enum Commands {
         /// Files or directories to fix
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
+
+        /// Add detected library exports and re-exports to exports.allowed_lib_exports
+        #[arg(long)]
+        update_export_allowlist: bool,
     },
 }
 
@@ -74,9 +79,12 @@ where
 {
     let cli = Cli::parse_from(args);
 
-    let (paths, is_fix) = match &cli.command {
-        Commands::Check { paths } => (paths.clone(), false),
-        Commands::Fix { paths } => (paths.clone(), true),
+    let (paths, is_fix, update_export_allowlist) = match &cli.command {
+        Commands::Check { paths } => (paths.clone(), false, false),
+        Commands::Fix {
+            paths,
+            update_export_allowlist,
+        } => (paths.clone(), true, *update_export_allowlist),
     };
 
     let files = discover_files(&paths);
@@ -84,6 +92,21 @@ where
     if files.is_empty() {
         println!("No .rs files found.");
         process::exit(0);
+    }
+
+    if update_export_allowlist {
+        match export_allowlist::update(&cli.config, &files) {
+            Ok(update) => println!(
+                "{} Added {} export(s); {} allowed export(s) configured.",
+                "info:".blue(),
+                update.added,
+                update.total,
+            ),
+            Err(error) => {
+                eprintln!("{} {error}", "error:".red());
+                process::exit(1);
+            }
+        }
     }
 
     // Resolve configuration based on CLI args
@@ -518,5 +541,19 @@ mod tests {
         let (unused, missing) = suppression_diagnostic_severities(&config);
         assert!(unused.is_none());
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn fix_accepts_update_export_allowlist_flag() {
+        let cli = Cli::try_parse_from(["rustcop", "fix", "--update-export-allowlist", "crate/src"])
+            .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Fix {
+                update_export_allowlist: true,
+                ..
+            }
+        ));
     }
 }
