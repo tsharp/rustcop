@@ -5,7 +5,7 @@ use syn::UseTree;
 use crate::{
     config::Config,
     diagnostic::{Diagnostic, Severity},
-    rules::{compare_visibilities, format_visibility, Rule},
+    rules::{compare_visibilities, configured_severity, format_visibility, Rule},
 };
 
 // ---------------------------------------------------------------------------
@@ -64,6 +64,7 @@ enum UseNode {
 // ---------------------------------------------------------------------------
 
 pub struct ImportFormattingRule {
+    severity: Option<Severity>,
     group: bool,
     sort: bool,
     merge: bool,
@@ -71,7 +72,12 @@ pub struct ImportFormattingRule {
 
 impl ImportFormattingRule {
     pub fn new(group: bool, sort: bool, merge: bool) -> Self {
-        Self { group, sort, merge }
+        Self {
+            severity: Some(Severity::Warning),
+            group,
+            sort,
+            merge,
+        }
     }
 
     pub fn from_config(config: &Config) -> Self {
@@ -81,6 +87,7 @@ impl ImportFormattingRule {
             .unwrap_or_default();
 
         Self {
+            severity: configured_severity(&imports.severity),
             group: imports.group_imports,
             sort: imports.group_imports, // Using group_imports for now
             merge: imports.import_merge_behaviour == "always",
@@ -178,6 +185,10 @@ impl Rule for ImportFormattingRule {
     }
 
     fn check(&self, content: &str, file: &Path) -> Vec<Diagnostic> {
+        let Some(severity) = &self.severity else {
+            return Vec::new();
+        };
+
         let fixed = self.format_imports(content);
         if fixed != *content {
             vec![Diagnostic {
@@ -187,7 +198,7 @@ impl Rule for ImportFormattingRule {
                         .to_string(),
                 file: file.to_path_buf(),
                 line: 1,
-                severity: Severity::Warning,
+                severity: severity.clone(),
                 suppressed: false,
                 suppression_justification: None,
             }]
@@ -197,7 +208,11 @@ impl Rule for ImportFormattingRule {
     }
 
     fn fix(&self, content: &str) -> String {
-        self.format_imports(content)
+        if self.severity.is_some() {
+            self.format_imports(content)
+        } else {
+            content.to_string()
+        }
     }
 }
 
@@ -983,6 +998,30 @@ use documentdb_gateway_core::{
         let rule = ImportFormattingRule::new(true, true, true);
         let result = rule.format_imports(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_configured_severity_and_disabled_fixing() {
+        let input = "use serde::Serialize;\nuse std::fmt;\n";
+        let error_rule = ImportFormattingRule {
+            severity: Some(Severity::Error),
+            group: true,
+            sort: true,
+            merge: true,
+        };
+
+        let diagnostics = error_rule.check(input, Path::new("lib.rs"));
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(diagnostics[0].severity, Severity::Error));
+
+        let disabled_rule = ImportFormattingRule {
+            severity: None,
+            group: true,
+            sort: true,
+            merge: true,
+        };
+        assert!(disabled_rule.check(input, Path::new("lib.rs")).is_empty());
+        assert_eq!(disabled_rule.fix(input), input);
     }
 
     #[test]

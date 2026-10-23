@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Config, LintConfig},
     diagnostic::{Diagnostic, Severity},
-    rules::Rule,
+    rules::{configured_severity, Rule},
 };
 
 /// Configuration for disallow_wildcard_imports rule
@@ -18,7 +18,7 @@ pub struct DisallowWildcardImportsConfig {
 
 /// Rule that disallows wildcard imports (use foo::*)
 pub struct DisallowWildcardImportsRule {
-    enabled: bool,
+    severity: Option<Severity>,
     allow_in_tests: bool,
 }
 
@@ -28,8 +28,6 @@ impl DisallowWildcardImportsRule {
             .get_nested_config::<LintConfig>(&["lints", "disallow_wildcard_imports"])
             .unwrap_or_default();
 
-        let enabled = lint_config.severity != "none";
-
         let rule_config = config
             .get_nested_config::<DisallowWildcardImportsConfig>(&[
                 "lints",
@@ -38,7 +36,7 @@ impl DisallowWildcardImportsRule {
             .unwrap_or_default();
 
         Self {
-            enabled,
+            severity: configured_severity(&lint_config.severity),
             allow_in_tests: rule_config.allow_in_tests,
         }
     }
@@ -54,9 +52,9 @@ impl Rule for DisallowWildcardImportsRule {
     }
 
     fn check(&self, content: &str, file: &Path) -> Vec<Diagnostic> {
-        if !self.enabled {
+        let Some(severity) = &self.severity else {
             return vec![];
-        }
+        };
 
         // If allow_in_tests is enabled and this is a test file, skip all checks
         if self.allow_in_tests && is_test_file(content) {
@@ -94,7 +92,7 @@ impl Rule for DisallowWildcardImportsRule {
                     message: "Use of wildcard imports (::*) is disallowed".to_string(),
                     file: file.to_path_buf(),
                     line: line_num,
-                    severity: Severity::Error,
+                    severity: severity.clone(),
                     suppressed: false,
                     suppression_justification: None,
                 });
@@ -190,19 +188,20 @@ mod tests {
     fn test_detects_wildcard_import() {
         let content = "use foo::*;\n";
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Warning),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].rule_id, "RC2002");
+        assert!(matches!(diags[0].severity, Severity::Warning));
     }
 
     #[test]
     fn test_detects_pub_wildcard_import() {
         let content = "pub use bar::*;\n";
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -213,7 +212,7 @@ mod tests {
     fn test_detects_super_wildcard_import() {
         let content = "use super::*;\n";
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -224,7 +223,7 @@ mod tests {
     fn test_allows_non_wildcard_imports() {
         let content = "use std::fs;\nuse crate::foo;\n";
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -235,7 +234,7 @@ mod tests {
     fn test_disabled_when_severity_none() {
         let content = "use foo::*;\n";
         let rule = DisallowWildcardImportsRule {
-            enabled: false,
+            severity: None,
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -258,7 +257,7 @@ mod tests {
 }
 "#;
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -276,7 +275,7 @@ mod tests {
 }
 "#;
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -294,7 +293,7 @@ mod tests {
 }
 "#;
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -315,7 +314,7 @@ fn test_something() {
 }
 "#;
         let rule = DisallowWildcardImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));

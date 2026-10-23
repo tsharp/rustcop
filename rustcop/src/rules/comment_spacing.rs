@@ -1,11 +1,25 @@
 use std::path::Path;
 
 use crate::{
+    config::{CommentSpacingConfig, Config},
     diagnostic::{Diagnostic, Severity},
-    rules::Rule,
+    rules::{configured_severity, Rule},
 };
 
-pub struct CommentSpacingRule;
+pub struct CommentSpacingRule {
+    severity: Option<Severity>,
+}
+
+impl CommentSpacingRule {
+    pub fn from_config(config: &Config) -> Self {
+        let spacing = config
+            .get_config::<CommentSpacingConfig>("comment_spacing")
+            .unwrap_or_default();
+        Self {
+            severity: configured_severity(&spacing.severity),
+        }
+    }
+}
 
 impl Rule for CommentSpacingRule {
     fn id(&self) -> &str {
@@ -17,6 +31,9 @@ impl Rule for CommentSpacingRule {
     }
 
     fn check(&self, content: &str, file: &Path) -> Vec<Diagnostic> {
+        let Some(severity) = &self.severity else {
+            return Vec::new();
+        };
         let Some(line) = first_spacing_violation(content) else {
             return Vec::new();
         };
@@ -27,14 +44,18 @@ impl Rule for CommentSpacingRule {
                 .to_string(),
             file: file.to_path_buf(),
             line,
-            severity: Severity::Warning,
+            severity: severity.clone(),
             suppressed: false,
             suppression_justification: None,
         }]
     }
 
     fn fix(&self, content: &str) -> String {
-        normalize_comment_spacing(content)
+        if self.severity.is_some() {
+            normalize_comment_spacing(content)
+        } else {
+            content.to_string()
+        }
     }
 }
 
@@ -221,11 +242,27 @@ mod tests {
 
     #[test]
     fn reports_the_second_comment_block_line() {
-        let diagnostics =
-            CommentSpacingRule.check("/* header */\n//! Module docs.\n", Path::new("lib.rs"));
+        let diagnostics = CommentSpacingRule {
+            severity: Some(Severity::Warning),
+        }
+        .check("/* header */\n//! Module docs.\n", Path::new("lib.rs"));
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].line, 2);
         assert_eq!(diagnostics[0].rule_id, "RC1002");
+    }
+
+    #[test]
+    fn configured_severity_can_error_or_disable_the_rule() {
+        let input = "/* header */\n//! Module docs.\n";
+        let error_rule = CommentSpacingRule {
+            severity: Some(Severity::Error),
+        };
+        let diagnostics = error_rule.check(input, Path::new("lib.rs"));
+        assert!(matches!(diagnostics[0].severity, Severity::Error));
+
+        let disabled_rule = CommentSpacingRule { severity: None };
+        assert!(disabled_rule.check(input, Path::new("lib.rs")).is_empty());
+        assert_eq!(disabled_rule.fix(input), input);
     }
 }

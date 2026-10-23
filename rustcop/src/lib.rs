@@ -8,10 +8,11 @@ use diagnostic::{Diagnostic, Severity};
 use files::discover_files;
 use output::{write_output, OutputFormat};
 use rules::{
-    comment_spacing::CommentSpacingRule, exports::ExportsRule, imports::ImportFormattingRule,
-    item_comments::RequireItemCommentsRule, method_comments::RequireMethodCommentsRule,
-    modules::ModulesRule, public_fields::DisallowPublicFieldsRule,
-    super_imports::DisallowSuperImportsRule, trait_impl_comments::RequireTraitImplCommentsRule,
+    comment_spacing::CommentSpacingRule, configured_lint_severity_or, exports::ExportsRule,
+    imports::ImportFormattingRule, item_comments::RequireItemCommentsRule,
+    method_comments::RequireMethodCommentsRule, modules::ModulesRule,
+    public_fields::DisallowPublicFieldsRule, super_imports::DisallowSuperImportsRule,
+    trait_impl_comments::RequireTraitImplCommentsRule,
     wildcard_imports::DisallowWildcardImportsRule, Rule,
 };
 use suppression::SuppressionParser;
@@ -113,7 +114,7 @@ where
     // Build the set of enabled rules
     // Import formatting rule is enabled by default
     let rules: Vec<Box<dyn Rule>> = vec![
-        Box::new(CommentSpacingRule),
+        Box::new(CommentSpacingRule::from_config(&config)),
         Box::new(ImportFormattingRule::from_config(&config)),
         Box::new(ModulesRule::from_config(&config)),
         Box::new(ExportsRule::from_config(&config)),
@@ -137,6 +138,8 @@ where
     let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
 
     let treat_warnings_as_errors = config.treat_warnings_as_errors();
+    let (unused_suppression_severity, missing_justification_severity) =
+        suppression_diagnostic_severities(&config);
 
     for file in &files {
         let mut content = match std::fs::read_to_string(file) {
@@ -237,41 +240,51 @@ where
         }
 
         // After checking all rules, look for unused suppressions
-        let unused_suppressions = suppression_parser.get_unused_suppressions();
-        for unused in unused_suppressions {
-            let diagnostic = Diagnostic {
-                rule_id: "RC9001".to_string(),
-                message: format!("Unused suppression: {}", unused.description),
-                file: file.clone(),
-                line: unused.directive_line,
-                severity: Severity::Error,
-                suppressed: false,
-                suppression_justification: None,
-            };
+        if let Some(severity) = &unused_suppression_severity {
+            let unused_suppressions = suppression_parser.get_unused_suppressions();
+            for unused in unused_suppressions {
+                let diagnostic = Diagnostic {
+                    rule_id: "RC9001".to_string(),
+                    message: format!("Unused suppression: {}", unused.description),
+                    file: file.clone(),
+                    line: unused.directive_line,
+                    severity: severity.clone(),
+                    suppressed: false,
+                    suppression_justification: None,
+                };
 
-            // Allow suppressing generated suppression diagnostics as well.
-            let (is_suppressed, _) =
-                suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
-            if is_suppressed {
-                continue;
+                // Allow suppressing generated suppression diagnostics as well.
+                let (is_suppressed, _) =
+                    suppression_parser.is_suppressed(diagnostic.line, &diagnostic.rule_id);
+                if is_suppressed {
+                    continue;
+                }
+
+                let severity_label = match diagnostic.severity {
+                    Severity::Error => {
+                        total_errors += 1;
+                        "error".red()
+                    }
+                    Severity::Warning => {
+                        total_warnings += 1;
+                        "warning".yellow()
+                    }
+                };
+                println!(
+                    "{} {} [{}]: {}",
+                    format!("{}:{}", file.display(), diagnostic.line).bold(),
+                    severity_label,
+                    diagnostic.rule_id.dimmed(),
+                    diagnostic.message,
+                );
+
+                total_diagnostics += 1;
+                all_diagnostics.push(diagnostic);
             }
-
-            // Print the error
-            println!(
-                "{} {} [{}]: {}",
-                format!("{}:{}", file.display(), diagnostic.line).bold(),
-                "error".red(),
-                diagnostic.rule_id.dimmed(),
-                diagnostic.message,
-            );
-
-            total_diagnostics += 1;
-            total_errors += 1;
-            all_diagnostics.push(diagnostic);
         }
 
         // Check for suppressions without justification (if required by config)
-        if config.require_suppression_justification() {
+        if let Some(severity) = &missing_justification_severity {
             let suppressions_without_justification: Vec<(usize, String)> = suppression_parser
                 .get_suppressions_without_justification()
                 .iter()
@@ -302,7 +315,7 @@ where
                     message: format!("Suppression missing justification: {}", description),
                     file: file.clone(),
                     line: directive_line,
-                    severity: Severity::Error,
+                    severity: severity.clone(),
                     suppressed: false,
                     suppression_justification: None,
                 };
@@ -313,17 +326,25 @@ where
                     continue;
                 }
 
-                // Print the error
+                let severity_label = match diagnostic.severity {
+                    Severity::Error => {
+                        total_errors += 1;
+                        "error".red()
+                    }
+                    Severity::Warning => {
+                        total_warnings += 1;
+                        "warning".yellow()
+                    }
+                };
                 println!(
                     "{} {} [{}]: {}",
                     format!("{}:{}", file.display(), diagnostic.line).bold(),
-                    "error".red(),
+                    severity_label,
                     diagnostic.rule_id.dimmed(),
                     diagnostic.message,
                 );
 
                 total_diagnostics += 1;
-                total_errors += 1;
                 all_diagnostics.push(diagnostic);
             }
         }
@@ -437,4 +458,65 @@ where
     }
 
     process::exit(0);
+}
+
+fn suppression_diagnostic_severities(config: &Config) -> (Option<Severity>, Option<Severity>) {
+    let unused = configured_lint_severity_or(config, "unused_suppressions", Severity::Error);
+    let has_missing_justification_config = config
+        .raw()
+        .get("lints")
+        .and_then(|lints| lints.get("missing_suppression_justification"))
+        .is_some();
+    let missing = if config.require_suppression_justification() || has_missing_justification_config
+    {
+        configured_lint_severity_or(config, "missing_suppression_justification", Severity::Error)
+    } else {
+        None
+    };
+    (unused, missing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suppression_diagnostics_have_independent_severities() {
+        let mut config = Config::empty();
+        config.raw = toml::from_str(
+            r#"
+            require_suppression_justification = false
+
+            [lints.unused_suppressions]
+            severity = "warning"
+
+            [lints.missing_suppression_justification]
+            severity = "error"
+            "#,
+        )
+        .unwrap();
+
+        let (unused, missing) = suppression_diagnostic_severities(&config);
+        assert!(matches!(unused, Some(Severity::Warning)));
+        assert!(matches!(missing, Some(Severity::Error)));
+    }
+
+    #[test]
+    fn suppression_diagnostics_can_be_disabled() {
+        let mut config = Config::empty();
+        config.raw = toml::from_str(
+            r#"
+            [lints.unused_suppressions]
+            severity = "none"
+
+            [lints.missing_suppression_justification]
+            severity = "none"
+            "#,
+        )
+        .unwrap();
+
+        let (unused, missing) = suppression_diagnostic_severities(&config);
+        assert!(unused.is_none());
+        assert!(missing.is_none());
+    }
 }

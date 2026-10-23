@@ -50,11 +50,55 @@ treat_warnings_as_errors = false
 require_suppression_justification = true
 
 [imports]
-enabled = true
-group = true    # Group imports: std → external → crate/self/super
-sort = true     # Sort imports alphabetically within each group
-merge = true    # Merge imports from the same crate into one `use` block
+severity = "warning"
+group_imports = true
+preferred_import_order = ["std", "extern_crate", "crate", "self", "super"]
+import_granularity = "crate"
+import_merge_behaviour = "always"
+allowed_import_prefixes = ["std", "extern_crate", "crate", "self"]
+
+[comment_spacing]
+severity = "warning"
+
+[exports]
+severity = "error"
+allowed_lib_exports = [
+    "my_crate::config",
+    "my_crate::api",
+    "another_workspace_crate::client",
+]
+
+[lints.unused_suppressions]
+severity = "error"
+
+[lints.missing_suppression_justification]
+severity = "error"
 ```
+
+Severity supports `"none"`, `"suggestion"`, `"warning"`, and `"error"`.
+`"none"` disables the rule and its automatic fixes. Suggestions are currently
+reported as warnings. Export allowlist entries use the Rust crate name followed
+by the exported root module or re-export, allowing one shared configuration to
+target multiple workspace crates. An explicit
+`[lints.missing_suppression_justification]` severity overrides the legacy
+`require_suppression_justification` switch.
+
+Every diagnostic rule has an independent severity setting:
+
+| Rule | Configuration section |
+|------|-----------------------|
+| ImportFormatting (RC1001) | `[imports]` |
+| CommentBlockSpacing (RC1002) | `[comment_spacing]` |
+| ModuleRules | `[modules]` |
+| ExportRules | `[exports]` |
+| DisallowSuperImports (RC2001) | `[lints.disallow_super_imports]` |
+| DisallowWildcardImports (RC2002) | `[lints.disallow_wildcard_imports]` |
+| DisallowPublicFields (RC2003) | `[lints.disallow_public_fields]` |
+| RequireMethodComments (RC3001) | `[lints.require_method_comments]` |
+| RequireItemComments (RC3002) | `[lints.require_item_comments]` |
+| RequireTraitImplComments (RC3003) | `[lints.require_trait_impl_comments]` |
+| UnusedSuppression (RC9001) | `[lints.unused_suppressions]` |
+| MissingSuppressionJustification (RC9002) | `[lints.missing_suppression_justification]` |
 
 ## Suppression Directives
 
@@ -136,6 +180,7 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 | RC1001 | ImportFormatting | Groups, sorts, and merges `use` statements |
 | RC1002 | CommentBlockSpacing | Separates adjacent different comment block types with one blank line |
 | RC2001 | DisallowSuperImports | Reports use of `super::` imports when configured |
+| RC2002 | DisallowWildcardImports | Reports wildcard imports when configured |
 | RC2003 | DisallowPublicFields | Reports unrestricted `pub` struct fields when configured |
 | RC3001 | RequireMethodComments | Requires documentation on all impl and trait methods when configured |
 | RC3002 | RequireItemComments | Requires documentation on selected declarations and individual enum variants |

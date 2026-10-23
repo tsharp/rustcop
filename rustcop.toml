@@ -14,13 +14,13 @@ require_suppression_justification = true
 [exports]
 severity = "error"
 allowed_lib_exports = [
-    "config",
-    "diagnostic",
-    "files",
-    "output",
-    "rules",
-    "suppression",
-    "rustcop_macros"
+    "rustcop::config",
+    "rustcop::diagnostic",
+    "rustcop::files",
+    "rustcop::output",
+    "rustcop::rules",
+    "rustcop::suppression",
+    "rustcop::rustcop_macros"
 ]
 
 [modules]
@@ -28,6 +28,9 @@ severity = "error"
 preferred_module_order = ["local", "crate", "super", "in_crate"]
 
 [imports]
+# Supported values: "none", "suggestion", "warning", "error".
+severity = "error"
+
 # Controls whether compatible `use` statements should be grouped together.
 # When true, the formatter may combine and organize imports into logical blocks.
 group_imports = true
@@ -59,6 +62,16 @@ import_merge_behaviour = "always"
 # Imports using prefixes not listed here may be rewritten or flagged depending on lint settings.
 # In this example, `super` is excluded, so parent-module imports are not allowed.
 allowed_import_prefixes = ["std", "extern_crate", "crate", "self"]
+
+[comment_spacing]
+# Supported values: "none", "suggestion", "warning", "error".
+severity = "warning"
+
+[lints.unused_suppressions]
+severity = "error"
+
+[lints.missing_suppression_justification]
+severity = "error"
 
 [lints.disallow_super_imports]
 # Controls the diagnostic severity for using `super::` imports.

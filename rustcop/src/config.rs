@@ -319,6 +319,7 @@ impl Config {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct ImportsConfig {
+    pub severity: String,
     pub group_imports: bool,
     pub preferred_import_order: Vec<String>,
     pub import_granularity: String,
@@ -329,6 +330,7 @@ pub struct ImportsConfig {
 impl Default for ImportsConfig {
     fn default() -> Self {
         ImportsConfig {
+            severity: "warning".to_string(),
             group_imports: true,
             preferred_import_order: vec![
                 "std".to_string(),
@@ -345,6 +347,21 @@ impl Default for ImportsConfig {
                 "crate".to_string(),
                 "self".to_string(),
             ],
+        }
+    }
+}
+
+/// Configuration for comment block spacing.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct CommentSpacingConfig {
+    pub severity: String,
+}
+
+impl Default for CommentSpacingConfig {
+    fn default() -> Self {
+        Self {
+            severity: "warning".to_string(),
         }
     }
 }
@@ -437,6 +454,7 @@ mod tests {
         // Should return default when section doesn't exist
         let imports = config.get_config::<ImportsConfig>("imports").unwrap();
         assert_eq!(imports.import_granularity, "crate");
+        assert_eq!(imports.severity, "warning");
     }
 
     #[test]
@@ -457,6 +475,7 @@ mod tests {
         assert!(!imports.group_imports);
         // Other fields should use defaults
         assert_eq!(imports.import_granularity, "crate");
+        assert_eq!(imports.severity, "warning");
     }
 
     #[test]

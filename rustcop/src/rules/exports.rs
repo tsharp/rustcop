@@ -54,6 +54,53 @@ impl Rule for ExportsRule {
             return vec![];
         }
 
+        let mut invalid_entries: Vec<&str> = self
+            .allowed_lib_exports
+            .iter()
+            .map(String::as_str)
+            .filter(|entry| !is_qualified_export(entry))
+            .collect();
+        if !invalid_entries.is_empty() {
+            invalid_entries.sort_unstable();
+            return vec![Diagnostic {
+                rule_id: self.id().to_string(),
+                message: format!(
+                    "exports.allowed_lib_exports entries must use `crate_name::export` format; invalid entries: {}",
+                    invalid_entries.join(", ")
+                ),
+                file: file.to_path_buf(),
+                line: 1,
+                severity: self.severity.clone(),
+                suppressed: false,
+                suppression_justification: None,
+            }];
+        }
+
+        let crate_name = match crate_name_for_file(file) {
+            Ok(crate_name) => crate_name,
+            Err(error) => {
+                return vec![Diagnostic {
+                    rule_id: self.id().to_string(),
+                    message: error,
+                    file: file.to_path_buf(),
+                    line: 1,
+                    severity: self.severity.clone(),
+                    suppressed: false,
+                    suppression_justification: None,
+                }];
+            }
+        };
+
+        self.check_exports(content, file, &crate_name)
+    }
+
+    fn fix(&self, content: &str) -> String {
+        content.to_string()
+    }
+}
+
+impl ExportsRule {
+    fn check_exports(&self, content: &str, file: &Path, crate_name: &str) -> Vec<Diagnostic> {
         let lines: Vec<&str> = content.lines().collect();
         let mut diagnostics = Vec::new();
         let mut i = 0usize;
@@ -64,12 +111,12 @@ impl Rule for ExportsRule {
             if trimmed.starts_with("pub mod ") {
                 if let Ok(item_mod) = syn::parse_str::<syn::ItemMod>(trimmed) {
                     let name = item_mod.ident.to_string();
-                    if !self.allowed_lib_exports.contains(&name) {
+                    let qualified_name = format!("{crate_name}::{name}");
+                    if !self.allowed_lib_exports.contains(&qualified_name) {
                         diagnostics.push(Diagnostic {
                             rule_id: self.id().to_string(),
                             message: format!(
-                                "Module `{}` is exported from lib.rs but is not in exports.allowed_lib_exports",
-                                name
+                                "Module `{qualified_name}` is exported from lib.rs but is not in exports.allowed_lib_exports"
                             ),
                             file: file.to_path_buf(),
                             line: i + 1,
@@ -92,12 +139,12 @@ impl Rule for ExportsRule {
                     collect_reexported_modules(&item_use.tree, &mut modules);
 
                     for module in modules {
-                        if !self.allowed_lib_exports.contains(module.as_str()) {
+                        let qualified_name = format!("{crate_name}::{module}");
+                        if !self.allowed_lib_exports.contains(&qualified_name) {
                             diagnostics.push(Diagnostic {
                                 rule_id: self.id().to_string(),
                                 message: format!(
-                                    "Module `{}` is re-exported from lib.rs but is not in exports.allowed_lib_exports",
-                                    module
+                                    "Module `{qualified_name}` is re-exported from lib.rs but is not in exports.allowed_lib_exports"
                                 ),
                                 file: file.to_path_buf(),
                                 line: i + 1,
@@ -118,10 +165,55 @@ impl Rule for ExportsRule {
 
         diagnostics
     }
+}
 
-    fn fix(&self, content: &str) -> String {
-        content.to_string()
+fn is_qualified_export(entry: &str) -> bool {
+    let mut segments = entry.split("::");
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some(crate_name), Some(export), None) if !crate_name.is_empty() && !export.is_empty()
+    )
+}
+
+fn crate_name_for_file(file: &Path) -> Result<String, String> {
+    let absolute_file = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Could not resolve current directory: {error}"))?
+            .join(file)
+    };
+
+    for directory in absolute_file.parent().into_iter().flat_map(Path::ancestors) {
+        let manifest = directory.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&manifest)
+            .map_err(|error| format!("Could not read {}: {error}", manifest.display()))?;
+        let parsed: toml::Value = toml::from_str(&content)
+            .map_err(|error| format!("Could not parse {}: {error}", manifest.display()))?;
+        let crate_name = parsed
+            .get("lib")
+            .and_then(|lib| lib.get("name"))
+            .and_then(toml::Value::as_str)
+            .or_else(|| {
+                parsed
+                    .get("package")
+                    .and_then(|package| package.get("name"))
+                    .and_then(toml::Value::as_str)
+            });
+
+        if let Some(crate_name) = crate_name {
+            return Ok(crate_name.replace('-', "_"));
+        }
     }
+
+    Err(format!(
+        "Could not determine the crate name for {}; no package Cargo.toml was found",
+        file.display()
+    ))
 }
 
 fn consume_stmt_end(lines: &[&str], start: usize) -> usize {
@@ -179,10 +271,10 @@ mod tests {
         let rule = ExportsRule {
             enabled: true,
             severity: Severity::Error,
-            allowed_lib_exports: ["config".to_string()].into_iter().collect(),
+            allowed_lib_exports: ["gateway::config".to_string()].into_iter().collect(),
         };
 
-        let diags = rule.check(content, Path::new("lib.rs"));
+        let diags = rule.check_exports(content, Path::new("lib.rs"), "gateway");
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("secret"));
     }
@@ -198,10 +290,10 @@ mod tests {
         let rule = ExportsRule {
             enabled: true,
             severity: Severity::Error,
-            allowed_lib_exports: ["config".to_string()].into_iter().collect(),
+            allowed_lib_exports: ["gateway::config".to_string()].into_iter().collect(),
         };
 
-        let diags = rule.check(content, Path::new("lib.rs"));
+        let diags = rule.check_exports(content, Path::new("lib.rs"), "gateway");
         assert!(diags.iter().any(|d| d.message.contains("secret")));
     }
 
@@ -225,10 +317,45 @@ mod tests {
         let rule = ExportsRule {
             enabled: true,
             severity: Severity::Error,
-            allowed_lib_exports: ["config".to_string()].into_iter().collect(),
+            allowed_lib_exports: ["gateway::config".to_string()].into_iter().collect(),
         };
 
         let diags = rule.check(content, Path::new("main.rs"));
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn test_requires_crate_qualified_allowlist_entries() {
+        let rule = ExportsRule {
+            enabled: true,
+            severity: Severity::Error,
+            allowed_lib_exports: ["config".to_string()].into_iter().collect(),
+        };
+
+        let diags = rule.check("pub mod config;\n", Path::new("lib.rs"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("crate_name::export"));
+        assert!(diags[0].message.contains("config"));
+    }
+
+    #[test]
+    fn test_allowlist_is_scoped_to_crate() {
+        let rule = ExportsRule {
+            enabled: true,
+            severity: Severity::Error,
+            allowed_lib_exports: ["other_crate::config".to_string()].into_iter().collect(),
+        };
+
+        let diags = rule.check_exports("pub mod config;\n", Path::new("lib.rs"), "gateway");
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("gateway::config"));
+    }
+
+    #[test]
+    fn test_resolves_crate_name_from_manifest() {
+        assert_eq!(
+            crate_name_for_file(Path::new("rustcop/src/lib.rs")).unwrap(),
+            "rustcop"
+        );
     }
 }

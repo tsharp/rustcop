@@ -11,7 +11,31 @@ pub mod wildcard_imports;
 use std::cmp::Ordering;
 use std::path::Path;
 
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, Severity};
+
+pub(super) fn configured_severity(value: &str) -> Option<Severity> {
+    match value {
+        "none" => None,
+        "error" => Some(Severity::Error),
+        _ => Some(Severity::Warning),
+    }
+}
+
+pub(crate) fn configured_lint_severity_or(
+    config: &crate::config::Config,
+    name: &str,
+    default: Severity,
+) -> Option<Severity> {
+    let configured = config.raw().get("lints").and_then(|lints| lints.get(name));
+    if configured.is_none() {
+        return Some(default);
+    }
+
+    let lint = config
+        .get_nested_config::<crate::config::LintConfig>(&["lints", name])
+        .unwrap_or_default();
+    configured_severity(&lint.severity)
+}
 
 pub(super) fn format_visibility(vis: &syn::Visibility) -> String {
     match vis {
@@ -67,3 +91,39 @@ pub trait Rule {
     fn fix(&self, content: &str) -> String;
 }
 mod documentation;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lint_severity_uses_the_rule_default_when_unconfigured() {
+        let severity = configured_lint_severity_or(
+            &crate::config::Config::empty(),
+            "example",
+            Severity::Error,
+        );
+        assert!(matches!(severity, Some(Severity::Error)));
+    }
+
+    #[test]
+    fn lint_severity_can_be_overridden_or_disabled() {
+        let mut config = crate::config::Config::empty();
+        config.raw = toml::from_str(
+            r#"
+            [lints.warning_rule]
+            severity = "warning"
+
+            [lints.disabled_rule]
+            severity = "none"
+            "#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            configured_lint_severity_or(&config, "warning_rule", Severity::Error),
+            Some(Severity::Warning)
+        ));
+        assert!(configured_lint_severity_or(&config, "disabled_rule", Severity::Error).is_none());
+    }
+}

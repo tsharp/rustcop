@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Config, LintConfig},
     diagnostic::{Diagnostic, Severity},
-    rules::Rule,
+    rules::{configured_severity, Rule},
 };
 
 /// Configuration for disallow_super_imports rule
@@ -18,7 +18,7 @@ pub struct DisallowSuperImportsConfig {
 
 /// Rule that disallows `super::` imports
 pub struct DisallowSuperImportsRule {
-    enabled: bool,
+    severity: Option<Severity>,
     allow_in_tests: bool,
 }
 
@@ -28,14 +28,12 @@ impl DisallowSuperImportsRule {
             .get_nested_config::<LintConfig>(&["lints", "disallow_super_imports"])
             .unwrap_or_default();
 
-        let enabled = lint_config.severity != "none";
-
         let rule_config = config
             .get_nested_config::<DisallowSuperImportsConfig>(&["lints", "disallow_super_imports"])
             .unwrap_or_default();
 
         Self {
-            enabled,
+            severity: configured_severity(&lint_config.severity),
             allow_in_tests: rule_config.allow_in_tests,
         }
     }
@@ -51,9 +49,9 @@ impl Rule for DisallowSuperImportsRule {
     }
 
     fn check(&self, content: &str, file: &Path) -> Vec<Diagnostic> {
-        if !self.enabled {
+        let Some(severity) = &self.severity else {
             return vec![];
-        }
+        };
 
         // If allow_in_tests is enabled and this is a test file, skip all checks
         if self.allow_in_tests && is_test_file(content) {
@@ -88,7 +86,7 @@ impl Rule for DisallowSuperImportsRule {
                     message: "Use of `super::` imports is disallowed".to_string(),
                     file: file.to_path_buf(),
                     line: line_num,
-                    severity: Severity::Error,
+                    severity: severity.clone(),
                     suppressed: false,
                     suppression_justification: None,
                 });
@@ -184,19 +182,20 @@ mod tests {
     fn test_detects_super_import() {
         let content = "use super::foo;\n";
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Warning),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].rule_id, "RC2001");
+        assert!(matches!(diags[0].severity, Severity::Warning));
     }
 
     #[test]
     fn test_detects_pub_super_import() {
         let content = "pub use super::bar;\n";
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -207,7 +206,7 @@ mod tests {
     fn test_allows_other_imports() {
         let content = "use std::fs;\nuse crate::foo;\n";
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -218,7 +217,7 @@ mod tests {
     fn test_disabled_when_severity_none() {
         let content = "use super::foo;\n";
         let rule = DisallowSuperImportsRule {
-            enabled: false,
+            severity: None,
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -241,7 +240,7 @@ mod tests {
 }
 "#;
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -259,7 +258,7 @@ mod tests {
 }
 "#;
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -277,7 +276,7 @@ mod tests {
 }
 "#;
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: false,
         };
         let diags = rule.check(content, Path::new("test.rs"));
@@ -298,7 +297,7 @@ fn test_something() {
 }
 "#;
         let rule = DisallowSuperImportsRule {
-            enabled: true,
+            severity: Some(Severity::Error),
             allow_in_tests: true,
         };
         let diags = rule.check(content, Path::new("test.rs"));
