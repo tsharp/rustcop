@@ -96,7 +96,7 @@ impl Rule for ModulesRule {
                     .cmp(&b.sort_group)
                     .then_with(|| compare_visibilities(&a.visibility, &b.visibility))
                     .then_with(|| a.sort_name.cmp(&b.sort_name)),
-                PreludeKind::PubUse => a.sort_name.cmp(&b.sort_name),
+                PreludeKind::PubUse => a.original_index.cmp(&b.original_index),
             })
         });
 
@@ -112,7 +112,9 @@ impl Rule for ModulesRule {
             let kind_changed = prev_kind.is_some_and(|prev| prev != block.kind);
             let visibility_changed =
                 prev_visibility.is_some_and(|prev| prev != block.visibility.as_str());
-            if kind_changed || visibility_changed {
+            let import_group_changed = matches!(block.kind, PreludeKind::Use | PreludeKind::PubUse)
+                && block.had_leading_separator;
+            if kind_changed || visibility_changed || import_group_changed {
                 result.push('\n');
             }
             result.push_str(&block.original_block);
@@ -152,6 +154,7 @@ struct ModuleBlock {
     sort_name: String,
     original_index: usize,
     original_block: String,
+    had_leading_separator: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -249,6 +252,7 @@ fn parse_prelude_blocks(
     let mut pending_leading: Vec<String> = Vec::new();
     let mut i = 0;
     let mut block_index = 0usize;
+    let mut had_leading_separator = false;
 
     while i < region_lines.len() {
         let line = region_lines[i];
@@ -257,6 +261,8 @@ fn parse_prelude_blocks(
         if trimmed.is_empty() {
             if !pending_leading.is_empty() {
                 pending_leading.push(line.to_string());
+            } else {
+                had_leading_separator = true;
             }
             i += 1;
             continue;
@@ -298,6 +304,7 @@ fn parse_prelude_blocks(
                     sort_name: item_mod.ident.to_string(),
                     original_index: block_index,
                     original_block: block_lines.join("\n"),
+                    had_leading_separator,
                 });
             } else if is_pub_use_line(trimmed) {
                 let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt_lines.join("\n")) else {
@@ -312,6 +319,7 @@ fn parse_prelude_blocks(
                     sort_name: stmt_lines.join("\n"),
                     original_index: block_index,
                     original_block: block_lines.join("\n"),
+                    had_leading_separator,
                 });
             } else {
                 let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt_lines.join("\n")) else {
@@ -326,16 +334,19 @@ fn parse_prelude_blocks(
                     sort_name: stmt_lines.join("\n"),
                     original_index: block_index,
                     original_block: block_lines.join("\n"),
+                    had_leading_separator,
                 });
             }
 
             block_index += 1;
             pending_leading.clear();
+            had_leading_separator = false;
             i = end + 1;
             continue;
         }
 
         pending_leading.clear();
+        had_leading_separator = false;
         i += 1;
     }
 
@@ -429,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_use_is_own_sorted_group() {
+    fn test_pub_use_is_own_group_and_order_is_preserved() {
         let input = concat!(
             "pub use zed::Thing;\n",
             "use std::fmt;\n",
@@ -449,8 +460,8 @@ mod tests {
             "\n",
             "pub mod config;\n",
             "\n",
-            "pub use alpha::Thing;\n",
             "pub use zed::Thing;\n",
+            "pub use alpha::Thing;\n",
         );
         assert_eq!(fixed, expected);
     }
@@ -480,8 +491,8 @@ mod tests {
             "\n",
             "pub mod config;\n",
             "\n",
-            "pub use alpha::Thing;\n",
             "pub use zed::Thing;\n",
+            "pub use alpha::Thing;\n",
         );
         assert_eq!(fixed, expected);
     }
@@ -566,5 +577,25 @@ mod tests {
         };
 
         assert_eq!(rule.fix(input), expected);
+    }
+
+    #[test]
+    fn test_preserves_import_group_separators() {
+        let input = concat!(
+            "use tokio_util::sync::CancellationToken;\n",
+            "\n",
+            "use crate::{context::ServiceContext, error::Result};\n",
+            "\n",
+            "pub mod context;\n",
+            "pub mod error;\n",
+        );
+
+        let rule = ModulesRule {
+            enabled: true,
+            severity: Severity::Error,
+            preferred_module_order: vec!["local".to_string(), "crate".to_string()],
+        };
+
+        assert_eq!(rule.fix(input), input);
     }
 }
