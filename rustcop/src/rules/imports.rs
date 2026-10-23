@@ -462,10 +462,13 @@ fn is_macro_tag_line(trimmed: &str) -> bool {
 }
 
 fn is_attachable_line(trimmed: &str) -> bool {
-    trimmed.starts_with("//")
-        || trimmed.starts_with("/*")
-        || is_attribute_line(trimmed)
-        || is_macro_tag_line(trimmed)
+    !trimmed.starts_with("//!")
+        && !trimmed.starts_with("/*!")
+        && !trimmed.starts_with("#![")
+        && (trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || is_attribute_line(trimmed)
+            || is_macro_tag_line(trimmed))
 }
 
 fn find_use_region(lines: &[&str]) -> Option<(usize, usize)> {
@@ -525,6 +528,10 @@ fn backtrack_attached_prefix(lines: &[&str], use_line_idx: usize) -> usize {
         } else {
             break;
         }
+    }
+
+    while start < use_line_idx && lines[start].trim().is_empty() {
+        start += 1;
     }
     start
 }
@@ -1132,6 +1139,36 @@ use documentdb_gateway_core::{
     }
 
     #[test]
+    fn test_preserves_separator_before_attached_module_docs() {
+        let input = concat!(
+            "/*\n",
+            " * Copyright notice\n",
+            " */\n",
+            "\n",
+            "//! Module documentation.\n",
+            "\n",
+            "#[cfg(test)]\n",
+            "use std::sync::{LazyLock, Mutex};\n",
+            "use std::fmt::Display;\n",
+        );
+        let expected = concat!(
+            "/*\n",
+            " * Copyright notice\n",
+            " */\n",
+            "\n",
+            "//! Module documentation.\n",
+            "\n",
+            "use std::fmt::Display;\n",
+            "#[cfg(test)]\n",
+            "use std::sync::{LazyLock, Mutex};\n",
+        );
+
+        let rule = ImportFormattingRule::new(true, true, true);
+        let result = rule.format_imports(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_attribute_attached_import_left_alone() {
         let input = concat!(
             "#[cfg(feature = \"io_uring\")]\n",
@@ -1221,6 +1258,7 @@ use serde::Serialize;
         let expected = concat!(
             "pub mod config;\n",
             "pub mod diagnostic;\n",
+            "\n",
             "use std::path::PathBuf;\n",
             "\n",
             "use clap::Parser;\n",

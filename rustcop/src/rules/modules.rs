@@ -186,10 +186,10 @@ fn is_prelude_decl_line(trimmed: &str) -> bool {
 }
 
 fn is_attachable_line(trimmed: &str) -> bool {
-    trimmed.starts_with("//")
-        || trimmed.starts_with("/*")
-        || trimmed.starts_with("#[")
-        || trimmed.starts_with("#![")
+    !trimmed.starts_with("//!")
+        && !trimmed.starts_with("/*!")
+        && !trimmed.starts_with("#![")
+        && (trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("#["))
 }
 
 fn find_prelude_region(lines: &[&str]) -> Option<(usize, usize)> {
@@ -233,6 +233,10 @@ fn backtrack_attached_prefix(lines: &[&str], decl_idx: usize) -> usize {
         } else {
             break;
         }
+    }
+
+    while start < decl_idx && lines[start].trim().is_empty() {
+        start += 1;
     }
     start
 }
@@ -529,5 +533,38 @@ mod tests {
         let fixed = rule.fix(input);
         assert_eq!(fixed, expected);
         assert_eq!(rule.fix(&fixed), fixed);
+    }
+
+    #[test]
+    fn test_preserves_separator_before_attached_module_docs() {
+        let input = concat!(
+            "/*\n",
+            " * Copyright notice\n",
+            " */\n",
+            "\n",
+            "//! Module documentation.\n",
+            "\n",
+            "mod private;\n",
+            "pub mod public;\n",
+        );
+        let expected = concat!(
+            "/*\n",
+            " * Copyright notice\n",
+            " */\n",
+            "\n",
+            "//! Module documentation.\n",
+            "\n",
+            "mod private;\n",
+            "\n",
+            "pub mod public;\n",
+        );
+
+        let rule = ModulesRule {
+            enabled: true,
+            severity: Severity::Error,
+            preferred_module_order: vec!["local".to_string(), "crate".to_string()],
+        };
+
+        assert_eq!(rule.fix(input), expected);
     }
 }
