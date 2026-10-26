@@ -209,7 +209,7 @@ The format is automatically detected from the file extension. SARIF v2.1.0 is su
 
 Import formatting follows `rustfmt` conventions:
 - **Grouping** — standard library first, then third-party crates, then internal (`crate`/`self`/`super`), separated by blank lines.
-- **Visibility** — imports and module declarations with different visibility are separated by a blank line.
+- **Visibility** — imports and module declarations with different visibility are separated by a blank line. Private `mod` declarations precede `pub mod` declarations, with blank lines separating imports, module visibility groups, re-exports, and subsequent items.
 - **Sorting** — alphabetical within each group.
 - **Merging** — multiple imports from the same crate are combined into a single `use` block.
 - **Multi-line expansion** — imports with nested braces are expanded to one item per line.

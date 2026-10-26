@@ -547,6 +547,60 @@ mod tests {
     }
 
     #[test]
+    fn test_private_modules_precede_public_modules_with_group_spacing() {
+        let inputs = [
+            concat!(
+                "use std::fmt;\n",
+                "/// Public module.\n",
+                "pub mod config;\n",
+                "#[cfg(test)]\n",
+                "mod export_allowlist;\n",
+                "// Public exports.\n",
+                "pub use config::Config;\n",
+                "fn main() {}\n",
+            ),
+            concat!(
+                "use std::fmt;\n",
+                "#[cfg(test)]\n",
+                "mod export_allowlist;\n",
+                "/// Public module.\n",
+                "pub mod config;\n",
+                "// Public exports.\n",
+                "pub use config::Config;\n",
+                "fn main() {}\n",
+            ),
+        ];
+        let expected = concat!(
+            "use std::fmt;\n",
+            "\n",
+            "#[cfg(test)]\n",
+            "mod export_allowlist;\n",
+            "\n",
+            "/// Public module.\n",
+            "pub mod config;\n",
+            "\n",
+            "// Public exports.\n",
+            "pub use config::Config;\n",
+            "\n",
+            "fn main() {}\n",
+        );
+
+        let rule = ModulesRule {
+            enabled: true,
+            severity: Severity::Error,
+            preferred_module_order: vec!["local".to_string(), "crate".to_string()],
+        };
+        let file = Path::new("lib.rs");
+
+        for input in inputs {
+            assert_eq!(rule.check(input, file).len(), 1);
+            assert_eq!(rule.fix(input), expected);
+        }
+        assert!(rule.check(expected, file).is_empty());
+        assert_eq!(rule.fix(expected), expected);
+    }
+
+    #[test]
     fn test_preserves_separator_before_attached_module_docs() {
         let input = concat!(
             "/*\n",

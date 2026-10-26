@@ -17,9 +17,10 @@ use rules::{
 };
 use suppression::SuppressionParser;
 
+mod export_allowlist;
+
 pub mod config;
 pub mod diagnostic;
-mod export_allowlist;
 pub mod files;
 pub mod output;
 pub mod rules;
