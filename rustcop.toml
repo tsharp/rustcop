@@ -20,7 +20,7 @@ allowed_lib_exports = [
     "rustcop::output",
     "rustcop::rules",
     "rustcop::suppression",
-    "rustcop::rustcop_macros"
+    "rustcop_macros::*"
 ]
 
 [modules]

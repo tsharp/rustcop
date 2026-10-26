@@ -3,6 +3,8 @@ use std::{
     path::Path,
 };
 
+use syn::spanned::Spanned;
+
 use crate::{
     config::{Config, ExportsConfig},
     diagnostic::{Diagnostic, Severity},
@@ -120,7 +122,7 @@ impl Rule for ExportsRule {
 impl ExportsRule {
     #[cfg(test)]
     fn check_exports(&self, content: &str, file: &Path, crate_name: &str) -> Vec<Diagnostic> {
-        self.check_detected_exports(file, detect_exports_for_crate(content, crate_name))
+        self.check_detected_exports(file, detect_exports_for_crate(content, crate_name).unwrap())
     }
 
     fn check_detected_exports(&self, file: &Path, exports: Vec<DetectedExport>) -> Vec<Diagnostic> {
@@ -152,64 +154,136 @@ impl ExportsRule {
 
 pub(crate) fn detect_exports(content: &str, file: &Path) -> Result<Vec<DetectedExport>, String> {
     let crate_name = crate_name_for_file(file)?;
-    Ok(detect_exports_for_crate(content, &crate_name))
+    detect_exports_for_crate(content, &crate_name)
 }
 
-fn detect_exports_for_crate(content: &str, crate_name: &str) -> Vec<DetectedExport> {
-    let lines: Vec<&str> = content.lines().collect();
+fn detect_exports_for_crate(
+    content: &str,
+    crate_name: &str,
+) -> Result<Vec<DetectedExport>, String> {
+    let file = syn::parse_file(content)
+        .map_err(|error| format!("Could not parse library exports: {error}"))?;
+    let local_modules: HashSet<String> = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(module.ident.to_string()),
+            _ => None,
+        })
+        .collect();
     let mut exports: BTreeMap<String, (usize, bool)> = BTreeMap::new();
-    let mut i = 0usize;
 
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-
-        if trimmed.starts_with("pub mod ") {
-            if let Ok(item_mod) = syn::parse_str::<syn::ItemMod>(trimmed) {
+    for item in file.items {
+        match item {
+            syn::Item::Mod(item_mod) if matches!(item_mod.vis, syn::Visibility::Public(_)) => {
                 exports
                     .entry(format!("{crate_name}::{}", item_mod.ident))
-                    .or_insert((i + 1, false));
+                    .or_insert((item_mod.span().start().line, false));
             }
-            i += 1;
-            continue;
-        }
-
-        if trimmed.starts_with("pub use ") {
-            let end = consume_stmt_end(&lines, i);
-            let stmt = lines[i..=end].join("\n");
-
-            if let Ok(item_use) = syn::parse_str::<syn::ItemUse>(&stmt) {
-                let mut modules = Vec::new();
-                collect_reexported_modules(&item_use.tree, &mut modules);
-                for module in modules {
+            syn::Item::Use(item_use) if matches!(item_use.vis, syn::Visibility::Public(_)) => {
+                let mut paths = Vec::new();
+                collect_reexported_paths(
+                    &item_use.tree,
+                    crate_name,
+                    &local_modules,
+                    &[],
+                    true,
+                    &mut paths,
+                );
+                for path in paths {
                     exports
-                        .entry(format!("{crate_name}::{module}"))
-                        .or_insert((i + 1, true));
+                        .entry(path)
+                        .or_insert((item_use.span().start().line, true));
                 }
             }
-
-            i = end + 1;
-            continue;
+            _ => {}
         }
-
-        i += 1;
     }
 
-    exports
+    Ok(exports
         .into_iter()
         .map(|(name, (line, reexported))| DetectedExport {
             name,
             line,
             reexported,
         })
-        .collect()
+        .collect())
+}
+
+fn collect_reexported_paths(
+    tree: &syn::UseTree,
+    crate_name: &str,
+    local_modules: &HashSet<String>,
+    prefix: &[String],
+    at_root: bool,
+    out: &mut Vec<String>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let ident = path.ident.to_string();
+            let mut next = prefix.to_vec();
+            if at_root && (ident == "crate" || ident == "self") {
+                next.push(crate_name.to_string());
+            } else if at_root && local_modules.contains(&ident) {
+                next.push(crate_name.to_string());
+                next.push(ident);
+            } else {
+                next.push(ident);
+            }
+            collect_reexported_paths(&path.tree, crate_name, local_modules, &next, false, out);
+        }
+        syn::UseTree::Name(name) => {
+            let ident = name.ident.to_string();
+            let mut path = prefix.to_vec();
+            if ident != "self" {
+                if at_root && local_modules.contains(&ident) {
+                    path.push(crate_name.to_string());
+                }
+                path.push(ident);
+            }
+            if !path.is_empty() {
+                out.push(path.join("::"));
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            let ident = rename.ident.to_string();
+            let mut path = prefix.to_vec();
+            if ident != "self" {
+                if at_root && local_modules.contains(&ident) {
+                    path.push(crate_name.to_string());
+                }
+                path.push(ident);
+            }
+            if !path.is_empty() {
+                out.push(format!("{} as {}", path.join("::"), rename.rename));
+            }
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_reexported_paths(item, crate_name, local_modules, prefix, at_root, out);
+            }
+        }
+        syn::UseTree::Glob(_) => {
+            let mut path = prefix.to_vec();
+            path.push("*".to_string());
+            out.push(path.join("::"));
+        }
+    }
 }
 
 fn is_qualified_export(entry: &str) -> bool {
-    let mut segments = entry.split("::");
-    matches!(
-        (segments.next(), segments.next(), segments.next()),
-        (Some(crate_name), Some(export), None) if !crate_name.is_empty() && !export.is_empty()
-    )
+    syn::parse_str::<syn::ItemUse>(&format!("use {entry};"))
+        .ok()
+        .and_then(|item| use_tree_segment_count(&item.tree))
+        .is_some_and(|segments| segments >= 2)
+}
+
+fn use_tree_segment_count(tree: &syn::UseTree) -> Option<usize> {
+    match tree {
+        syn::UseTree::Path(path) => use_tree_segment_count(&path.tree).map(|count| count + 1),
+        syn::UseTree::Name(_) | syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => Some(1),
+        syn::UseTree::Group(_) => None,
+    }
 }
 
 fn crate_name_for_file(file: &Path) -> Result<String, String> {
@@ -253,50 +327,6 @@ fn crate_name_for_file(file: &Path) -> Result<String, String> {
     ))
 }
 
-fn consume_stmt_end(lines: &[&str], start: usize) -> usize {
-    let mut i = start;
-    let mut brace_depth = 0i32;
-
-    while i < lines.len() {
-        for ch in lines[i].chars() {
-            match ch {
-                '{' => brace_depth += 1,
-                '}' => brace_depth -= 1,
-                _ => {}
-            }
-        }
-
-        if brace_depth <= 0 && lines[i].contains(';') {
-            return i;
-        }
-
-        i += 1;
-    }
-
-    lines.len().saturating_sub(1)
-}
-
-fn collect_reexported_modules(tree: &syn::UseTree, out: &mut Vec<String>) {
-    match tree {
-        syn::UseTree::Path(path) => {
-            let ident = path.ident.to_string();
-            if ident == "crate" || ident == "self" || ident == "super" {
-                collect_reexported_modules(&path.tree, out);
-            } else {
-                out.push(ident);
-            }
-        }
-        syn::UseTree::Name(name) => out.push(name.ident.to_string()),
-        syn::UseTree::Rename(rename) => out.push(rename.ident.to_string()),
-        syn::UseTree::Group(group) => {
-            for item in &group.items {
-                collect_reexported_modules(item, out);
-            }
-        }
-        syn::UseTree::Glob(_) => out.push("*".to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,19 +349,25 @@ mod tests {
     #[test]
     fn test_reports_disallowed_pub_use_reexports() {
         let content = concat!(
-            "pub use config::Config;\n",
-            "pub use secret::Hidden;\n",
-            "pub use crate::{config, secret as alias};\n",
+            "pub use crate_a::thing;\n",
+            "pub use crate_b::thing;\n",
+            "pub use crate_c::thing as new_thing;\n",
         );
 
         let rule = ExportsRule {
             enabled: true,
             severity: Severity::Error,
-            allowed_lib_exports: ["gateway::config".to_string()].into_iter().collect(),
+            allowed_lib_exports: ["crate_a::thing".to_string()].into_iter().collect(),
         };
 
         let diags = rule.check_exports(content, Path::new("lib.rs"), "gateway");
-        assert!(diags.iter().any(|d| d.message.contains("secret")));
+        assert_eq!(diags.len(), 2);
+        assert!(diags
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("crate_b::thing")));
+        assert!(diags
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("crate_c::thing as new_thing")));
     }
 
     #[test]
@@ -377,6 +413,13 @@ mod tests {
     }
 
     #[test]
+    fn test_accepts_exact_alias_and_glob_allowlist_entries() {
+        assert!(is_qualified_export("crate_c::thing as new_thing"));
+        assert!(is_qualified_export("external_macros::*"));
+        assert!(!is_qualified_export("crate_a::{thing, other}"));
+    }
+
+    #[test]
     fn test_allowlist_is_scoped_to_crate() {
         let rule = ExportsRule {
             enabled: true,
@@ -398,28 +441,29 @@ mod tests {
     }
 
     #[test]
-    fn test_detects_modules_and_reexport_source_roots() {
+    fn test_detects_exact_module_and_reexport_paths() {
         let content = concat!(
+            "mod runtime;\n",
             "pub mod config;\n",
             "pub use runtime::benchmarks as runtime_benchmarks;\n",
             "pub use crate::{config, telemetry::Telemetry};\n",
             "pub use macros::*;\n",
         );
 
-        let exports = detect_exports_for_crate(content, "gateway");
+        let exports = detect_exports_for_crate(content, "gateway").unwrap();
         let names: Vec<&str> = exports.iter().map(|export| export.name.as_str()).collect();
         assert_eq!(
             names,
             [
                 "gateway::config",
-                "gateway::macros",
-                "gateway::runtime",
-                "gateway::telemetry",
+                "gateway::runtime::benchmarks as runtime_benchmarks",
+                "gateway::telemetry::Telemetry",
+                "macros::*",
             ]
         );
         assert!(exports
             .iter()
-            .find(|export| export.name == "gateway::runtime")
+            .find(|export| { export.name == "gateway::runtime::benchmarks as runtime_benchmarks" })
             .is_some_and(|export| export.reexported));
     }
 }

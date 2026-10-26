@@ -45,7 +45,7 @@ If no paths are given, both commands default to the current directory.
 | Flag | Description |
 |------|-------------|
 | `-c`, `--config <FILE>` | Path to the config file (default: `rustcop.toml`) |
-| `--update-export-allowlist` | With `fix`, add detected `pub mod` and `pub use` roots to `exports.allowed_lib_exports` |
+| `--update-export-allowlist` | With `fix`, add detected `pub mod` and exact `pub use` paths to `exports.allowed_lib_exports` |
 
 ## Configuration
 
@@ -88,17 +88,20 @@ severity = "error"
 
 Severity supports `"none"`, `"suggestion"`, `"warning"`, and `"error"`.
 `"none"` disables the rule and its automatic fixes. Suggestions are currently
-reported as warnings. Export allowlist entries use the Rust crate name followed
-by the exported root module or re-export, allowing one shared configuration to
-target multiple workspace crates. An explicit
+reported as warnings. Export allowlist entries identify an exact public module
+or re-export path, allowing one shared configuration to target multiple
+workspace crates. An explicit
 `[lints.missing_suppression_justification]` severity overrides the legacy
 `require_suppression_justification` switch.
 
 When `[exports]` is enabled, `allowed_lib_exports` must contain at least one
 entry. RustCop detects both `pub mod` declarations and `pub use` re-exports.
-Re-exports are represented by their source root: for example,
+Every re-export leaf is explicit, including aliases and globs. For example,
 `pub use runtime::benchmarks as runtime_benchmarks` requires
-`"my_crate::runtime"`. Run
+`"my_crate::runtime::benchmarks as runtime_benchmarks"` when `runtime` is a
+local module, while `pub use external_macros::*` requires
+`"external_macros::*"`. Allowing `"crate_a::thing"` does not allow
+`"crate_b::thing"` or `"crate_c::thing as new_thing"`. Run
 `cargo rustcop fix --update-export-allowlist` to merge all currently detected
 entries into the configured list.
 

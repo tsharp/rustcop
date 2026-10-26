@@ -285,7 +285,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rustcop"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "clap",
  "colored",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "rustcop-macros"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "proc-macro2",
  "quote",
